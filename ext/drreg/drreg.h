@@ -614,7 +614,7 @@ DR_EXPORT
  * may not be able to distinguish a drreg spill or restore from some
  * other spill or restore.
  *
- * It is not able to identify XMM spill/restructions instructions.
+ * It is not able to identify XMM spill/restore instructions.
  *
  * @return whether successful or an error code on failure.
  */
