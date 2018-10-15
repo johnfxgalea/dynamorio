@@ -78,7 +78,6 @@
 #define REG_LIVE ((void *)(ptr_uint_t)1)
 #define REG_UNKNOWN ((void *)(ptr_uint_t)2) /* only used outside drmgr insert phase */
 
-
 /* FIXME: XMM and gpr handlers do not share code despite common functionality.
  * Use of union in reg_info_t to represent both types of
  * registers. Accordingly, reduce code.
@@ -195,21 +194,17 @@ get_where_app_pc(instr_t *where)
 }
 #endif
 
-
 static bool
 is_applicable_xmm(reg_id_t xmm_reg)
 {
+    if (reg_is_xmm(xmm_reg) && xmm_reg >= DR_REG_START_XMM &&
+        xmm_reg < DR_REG_APPLICABLE_STOP_XMM) {
 
-	if (reg_is_xmm(xmm_reg) &&
-			xmm_reg < DR_REG_START_XMM &&
-			xmm_reg > DR_REG_APPLICABLE_STOP_XMM){
+        return true;
+    }
 
-		return true;
-	}
-
-	return false;
+    return false;
 }
-
 
 /***************************************************************************
  * SPILLING AND RESTORING
@@ -356,7 +351,6 @@ get_xmm_spilled_value(void *drcontext, uint slot, OUT byte *value_buf, size_t bu
     memcpy(value_buf, pt->xmm_reg + (slot * REG_XMM_SIZE), REG_XMM_SIZE);
     return true;
 }
-
 
 drreg_status_t
 drreg_max_slots_used(OUT uint *max)
@@ -1247,18 +1241,22 @@ drreg_reserve_xmm_reg_internal(void *drcontext, instrlist_t *ilist, instr_t *whe
         /* Look for a dead register, or the least-used register */
         for (reg = DR_REG_START_XMM; reg <= DR_REG_APPLICABLE_STOP_XMM; reg++) {
             uint idx = XMM_IDX(reg);
+
             if (pt->xmm_reg[idx].in_use)
                 continue;
 
             if (reg_allowed != NULL && drvector_get_entry(reg_allowed, idx) == NULL)
                 continue;
+
             /* If we had a hint as to local vs whole-bb we could downgrade being
              * dead right now as a priority
              */
             if (drvector_get_entry(&pt->xmm_reg[idx].live, pt->live_idx) == REG_DEAD)
                 break;
+
             if (only_if_no_spill)
                 continue;
+
             if (pt->xmm_reg[idx].app_uses < min_uses) {
                 best_reg = reg;
                 min_uses = pt->xmm_reg[idx].app_uses;
@@ -1268,9 +1266,8 @@ drreg_reserve_xmm_reg_internal(void *drcontext, instrlist_t *ilist, instr_t *whe
     if (reg > DR_REG_APPLICABLE_STOP_XMM) {
         if (best_reg != DR_REG_NULL)
             reg = best_reg;
-        else {
+        else
             return DRREG_ERROR_REG_CONFLICT;
-        }
     }
     if (slot == MAX_XMM_SPILLS) {
         slot = find_xmm_free_slot(pt);
@@ -1289,8 +1286,10 @@ drreg_reserve_xmm_reg_internal(void *drcontext, instrlist_t *ilist, instr_t *whe
             reg_id_t xmm_block_reg;
             drreg_status_t res = drreg_reserve_reg_internal(drcontext, ilist, where, NULL,
                                                             false, &xmm_block_reg);
-            if (res != DRREG_SUCCESS)
+            if (res != DRREG_SUCCESS) {
                 return res;
+            }
+
             load_xmm_block(drcontext, ilist, where, xmm_block_reg);
 
             spill_xmm_reg(drcontext, pt, reg, slot, ilist, where, xmm_block_reg);
@@ -1383,6 +1382,7 @@ drreg_reserve_dead_xmm_register(void *drcontext, instrlist_t *ilist, instr_t *wh
     res = drreg_reserve_xmm_reg_internal(drcontext, ilist, where, reg_allowed, true,
                                          reg_out);
     instrlist_set_auto_predicate(ilist, pred);
+
     return res;
 }
 
@@ -1460,6 +1460,10 @@ drreg_restore_app_value(void *drcontext, instrlist_t *ilist, instr_t *where,
     }
 
     if (is_applicable_xmm(app_reg)) {
+
+        if (!is_applicable_xmm(dst_reg))
+            return DRREG_ERROR_INVALID_PARAMETER;
+
         /* check if app_reg is an unspilled reg */
         if (pt->xmm_reg[XMM_IDX(app_reg)].native) {
 
@@ -1499,7 +1503,7 @@ drreg_restore_app_value(void *drcontext, instrlist_t *ilist, instr_t *where,
         if (res != DRREG_SUCCESS)
             return res;
 
-        if (stateful && !pt->reg[XMM_IDX(app_reg)].in_use)
+        if (stateful && !pt->xmm_reg[XMM_IDX(app_reg)].in_use)
             pt->xmm_reg[XMM_IDX(app_reg)].native = true;
     }
 
@@ -1632,7 +1636,6 @@ drreg_restore_xmm_reg_now(void *drcontext, instrlist_t *ilist, instr_t *inst,
                           per_thread_t *pt, reg_id_t reg)
 {
     drreg_status_t res;
-    reg_id_t xmm_block_reg;
 
     if (pt->xmm_reg[XMM_IDX(reg)].ever_spilled) {
         if (pt->xmm_reg[XMM_IDX(reg)].xchg != DR_REG_NULL) {
@@ -1640,20 +1643,23 @@ drreg_restore_xmm_reg_now(void *drcontext, instrlist_t *ilist, instr_t *inst,
             return DRREG_ERROR_FEATURE_NOT_AVAILABLE;
         }
 
+        reg_id_t xmm_block_reg;
         /* We pick an unreserved reg, spill it, and use it for scratch */
         res = drreg_reserve_reg_internal(drcontext, ilist, inst, NULL, false,
                                          &xmm_block_reg);
         if (res != DRREG_SUCCESS)
             return res;
 
-        // Load XMM Block
         load_xmm_block(drcontext, ilist, inst, xmm_block_reg);
+
         restore_xmm_reg(drcontext, pt, reg, pt->xmm_reg[XMM_IDX(reg)].slot, ilist, inst,
                         xmm_block_reg, true);
+
+        /* We keep .native==false */
         drreg_unreserve_register(drcontext, ilist, inst, xmm_block_reg);
 
     } else {
-        pt->xmm_slot_use[pt->xmm_reg[XMM_IDX(reg)].slot] = DR_REG_NULL;
+        pt->slot_use[pt->xmm_reg[XMM_IDX(reg)].slot] = DR_REG_NULL;
     }
     pt->xmm_reg[XMM_IDX(reg)].native = true;
     return DRREG_SUCCESS;
@@ -1705,7 +1711,6 @@ drreg_unreserve_xmm_register(void *drcontext, instrlist_t *ilist, instr_t *where
          */
         dr_pred_type_t pred = instrlist_get_auto_predicate(ilist);
         drreg_status_t res;
-
         /* XXX i#2585: drreg should predicate spills and restores as appropriate */
         instrlist_set_auto_predicate(ilist, DR_PRED_NONE);
         res = drreg_restore_xmm_reg_now(drcontext, ilist, where, pt, reg);
@@ -1735,7 +1740,7 @@ drreg_reservation_info(void *drcontext, reg_id_t reg, opnd_t *opnd OUT,
     if (is_applicable_xmm(reg)) {
 
         if (reg < DR_REG_START_XMM || reg > DR_REG_APPLICABLE_STOP_XMM ||
-            !pt->reg[XMM_IDX(reg)].in_use)
+            !pt->xmm_reg[XMM_IDX(reg)].in_use)
             return DRREG_ERROR_INVALID_PARAMETER;
 
     } else {
@@ -1758,7 +1763,8 @@ drreg_reservation_info(void *drcontext, reg_id_t reg, opnd_t *opnd OUT,
 }
 
 static void
-set_info(drreg_reserve_info_t *info, per_thread_t *pt, void *drcontext, reg_id_t reg, reg_info_t *reg_info)
+set_info(drreg_reserve_info_t *info, per_thread_t *pt, void *drcontext, reg_id_t reg,
+         reg_info_t *reg_info)
 {
     info->reserved = reg_info->in_use;
     info->holds_app_value = reg_info->native;
@@ -1810,7 +1816,7 @@ drreg_reservation_info_ex(void *drcontext, reg_id_t reg, drreg_reserve_info_t *i
     if (is_applicable_xmm(reg)) {
         pt = get_tls_data(drcontext);
 
-        reg_info = &pt->reg[XMM_IDX(reg)];
+        reg_info = &pt->xmm_reg[XMM_IDX(reg)];
         set_info(info, pt, drcontext, reg, reg_info);
 
     } else {
@@ -2236,70 +2242,73 @@ drreg_restore_app_aflags(void *drcontext, instrlist_t *ilist, instr_t *where)
  * Checks whether opnd
  */
 static bool
-does_opnd_ref_xmm_block(void *drcontext, opnd_t *opnd, dr_mcontext_t *raw_mcontext, uint *slot_out OUT){
+does_opnd_ref_xmm_block(void *drcontext, opnd_t *opnd, dr_mcontext_t *raw_mcontext,
+                        uint *slot_out OUT)
+{
 
-	ASSERT(opnd_is_base_disp(*opnd), "not a memory reference");
+    ASSERT(opnd_is_base_disp(*opnd), "not a memory reference");
 
     per_thread_t *pt = get_tls_data(drcontext);
 
     if (pt == NULL)
-    	return false;
+        return false;
 
     /* Extract opnd data to determine whether the base refers to xmm block */
-	reg_id_t base = opnd_get_base(*opnd);
-	reg_t base_value = reg_get_value(base, raw_mcontext);
+    reg_id_t base = opnd_get_base(*opnd);
+    reg_t base_value = reg_get_value(base, raw_mcontext);
 
-	if (pt->xmm_spills == (void *) base_value)
-		return false;
+    if (pt->xmm_spills == (void *)base_value)
+        return false;
 
-	if (slot_out){
-		/* Set OUT information */
-		int slot_disp = opnd_get_disp(*opnd);
-		ASSERT(slot_disp % REG_XMM_SIZE == 0, "disp is not divisible by size of xmm")
+    if (slot_out) {
+        /* Set OUT information */
+        int slot_disp = opnd_get_disp(*opnd);
+        ASSERT(slot_disp % REG_XMM_SIZE == 0, "disp is not divisible by size of xmm");
 
-		*slot_out = slot_disp/REG_XMM_SIZE;
-	}
+        *slot_out = slot_disp / REG_XMM_SIZE;
+    }
 
-	return true;
+    return true;
 }
 
 /*
  * Determines whether an instruction is a spill or restore of an XMM register.
  */
-static bool is_our_xmm_spill_or_restore(void *drcontext, instr_t *instr, dr_mcontext_t *raw_mcontext,
-		bool *spill OUT, reg_id_t *reg_spilled OUT, uint *slot_out OUT){
+static bool
+is_our_xmm_spill_or_restore(void *drcontext, instr_t *instr, dr_mcontext_t *raw_mcontext,
+                            bool *spill OUT, reg_id_t *reg_spilled OUT,
+                            uint *slot_out OUT)
+{
 
-	ASSERT(raw_mcontext, "no mcontext provided for xmm spill check");
+    ASSERT(raw_mcontext, "no mcontext provided for xmm spill check");
 
     /* Check if instruction is a movdq */
-    if (instr_get_opcode(instr)!= OP_movdqu)
-    	return false;
+    if (instr_get_opcode(instr) != OP_movdqu)
+        return false;
 
     opnd_t dst = instr_get_dst(instr, 0);
     opnd_t src = instr_get_src(instr, 0);
 
     /* Check for spill */
-    if (opnd_is_base_disp(dst) &&
-    	opnd_is_reg(src) &&
-		is_applicable_xmm(opnd_get_reg(src)) &&
-    	does_opnd_ref_xmm_block(drcontext, &dst, raw_mcontext, slot_out)){
+    if (opnd_is_base_disp(dst) && opnd_is_reg(src) &&
+        is_applicable_xmm(opnd_get_reg(src)) &&
+        does_opnd_ref_xmm_block(drcontext, &dst, raw_mcontext, slot_out)) {
 
-    	if (reg_spilled)
-    		*reg_spilled = opnd_get_reg(src);
+        if (reg_spilled)
+            *reg_spilled = opnd_get_reg(src);
 
-    	if (spill)
-    		*spill = true;
-    	return true;
+        if (spill)
+            *spill = true;
+        return true;
     }
 
     /* Check for restore */
-    if (opnd_is_base_disp(src) &&
-    	opnd_is_reg(dst) &&
-		is_applicable_xmm(opnd_get_reg(dst)) &&
-    	does_opnd_ref_xmm_block(drcontext, &src, raw_mcontext, slot_out)){
-    	*reg_spilled = opnd_get_reg(dst);
-    	*spill = false;
-    	return true;
+    if (opnd_is_base_disp(src) && opnd_is_reg(dst) &&
+        is_applicable_xmm(opnd_get_reg(dst)) &&
+        does_opnd_ref_xmm_block(drcontext, &src, raw_mcontext, slot_out)) {
+        *reg_spilled = opnd_get_reg(dst);
+        *spill = false;
+        return true;
     }
 
     return false;
@@ -2307,21 +2316,22 @@ static bool is_our_xmm_spill_or_restore(void *drcontext, instr_t *instr, dr_mcon
 
 static bool
 is_our_spill_or_restore(void *drcontext, instr_t *instr, dr_mcontext_t *raw_mcontext,
-		bool *spill OUT, bool *xmm_spill OUT, reg_id_t *reg_spilled OUT,
-		uint *slot_out OUT, uint *offs_out OUT)
+                        bool *spill OUT, bool *xmm_spill OUT, reg_id_t *reg_spilled OUT,
+                        uint *slot_out OUT, uint *offs_out OUT)
 {
     bool tls;
     uint slot, offs;
     reg_id_t reg;
 
     if (xmm_spill)
-    	*xmm_spill = false;
+        *xmm_spill = false;
 
-    if(raw_mcontext && is_our_xmm_spill_or_restore(drcontext, instr, raw_mcontext,
-    		spill, reg_spilled, slot_out)){
+    if (raw_mcontext &&
+        is_our_xmm_spill_or_restore(drcontext, instr, raw_mcontext, spill, reg_spilled,
+                                    slot_out)) {
 
-    	if (xmm_spill)
-    		*xmm_spill = true;
+        if (xmm_spill)
+            *xmm_spill = true;
     }
 
     if (!instr_is_reg_spill_or_restore(drcontext, instr, &tls, spill, &reg, &offs))
@@ -2380,8 +2390,9 @@ drreg_is_instr_spill_or_restore(void *drcontext, instr_t *instr, bool *spill OUT
                                 bool *restore OUT, reg_id_t *reg_spilled OUT)
 {
     bool is_spill;
-    if (!is_our_spill_or_restore(drcontext, instr, NULL, NULL, &is_spill, reg_spilled, NULL, NULL)) {
-    	if (spill != NULL)
+    if (!is_our_spill_or_restore(drcontext, instr, NULL, NULL, &is_spill, reg_spilled,
+                                 NULL, NULL)) {
+        if (spill != NULL)
             *spill = false;
         if (restore != NULL)
             *restore = false;
@@ -2437,58 +2448,59 @@ drreg_event_restore_state(void *drcontext, bool restore_memory,
         prev_pc = pc;
         pc = decode(drcontext, pc, &inst);
 
-        if (is_our_spill_or_restore(drcontext, &inst, info->raw_mcontext, &spill, &is_xmm_spill, &reg, &slot, &offs)) {
+        if (is_our_spill_or_restore(drcontext, &inst, info->raw_mcontext, &spill,
+                                    &is_xmm_spill, &reg, &slot, &offs)) {
             LOG(drcontext, DR_LOG_ALL, 3,
                 "%s @" PFX " found %s to %s offs=0x%x => slot %d\n", __FUNCTION__,
                 prev_pc, spill ? "spill" : "restore", get_register_name(reg), offs, slot);
             if (spill) {
 
-            	if (is_xmm_spill) {
-					if (spilled_xmm_to[XMM_IDX(reg)] < MAX_XMM_SPILLS &&
-					/* allow redundant spill */
-					spilled_xmm_to[XMM_IDX(reg)] != slot) {
-						/* This reg is already spilled: we assume that this new spill
-						 * is to a tmp slot for preserving the tool's value.
-						 */
-						LOG(drcontext, DR_LOG_ALL, 3, "%s @" PFX ": ignoring tool spill\n",
-								__FUNCTION__, pc);
-					} else {
-						spilled_xmm_to[XMM_IDX(reg)] = slot;
-					}
+                if (is_xmm_spill) {
+                    if (spilled_xmm_to[XMM_IDX(reg)] < MAX_XMM_SPILLS &&
+                        /* allow redundant spill */
+                        spilled_xmm_to[XMM_IDX(reg)] != slot) {
+                        /* This reg is already spilled: we assume that this new spill
+                         * is to a tmp slot for preserving the tool's value.
+                         */
+                        LOG(drcontext, DR_LOG_ALL, 3,
+                            "%s @" PFX ": ignoring tool spill\n", __FUNCTION__, pc);
+                    } else {
+                        spilled_xmm_to[XMM_IDX(reg)] = slot;
+                    }
 
-				} else {
-					if (slot == AFLAGS_SLOT) {
-						spilled_to_aflags = slot;
-					} else if (spilled_to[GPR_IDX(reg)] < MAX_SPILLS &&
-					/* allow redundant spill */
-					spilled_to[GPR_IDX(reg)] != slot) {
-						/* This reg is already spilled: we assume that this new spill
-						 * is to a tmp slot for preserving the tool's value.
-						 */
-						LOG(drcontext, DR_LOG_ALL, 3, "%s @" PFX ": ignoring tool spill\n",
-								__FUNCTION__, pc);
-					} else {
-						spilled_to[GPR_IDX(reg)] = slot;
-					}
-				}
+                } else {
+                    if (slot == AFLAGS_SLOT) {
+                        spilled_to_aflags = slot;
+                    } else if (spilled_to[GPR_IDX(reg)] < MAX_SPILLS &&
+                               /* allow redundant spill */
+                               spilled_to[GPR_IDX(reg)] != slot) {
+                        /* This reg is already spilled: we assume that this new spill
+                         * is to a tmp slot for preserving the tool's value.
+                         */
+                        LOG(drcontext, DR_LOG_ALL, 3,
+                            "%s @" PFX ": ignoring tool spill\n", __FUNCTION__, pc);
+                    } else {
+                        spilled_to[GPR_IDX(reg)] = slot;
+                    }
+                }
             } else {
-				if (is_xmm_spill) {
-					if (spilled_xmm_to[XMM_IDX(reg)] == slot)
-						spilled_xmm_to[XMM_IDX(reg)] = MAX_XMM_SPILLS;
-					else {
-						LOG(drcontext, DR_LOG_ALL, 3, "%s @" PFX ": ignoring restore\n",
-								__FUNCTION__, pc);
-					}
-				} else {
-					if (slot == AFLAGS_SLOT && spilled_to_aflags == slot)
-						spilled_to_aflags = MAX_SPILLS;
-					else if (spilled_to[GPR_IDX(reg)] == slot)
-						spilled_to[GPR_IDX(reg)] = MAX_SPILLS;
-					else {
-						LOG(drcontext, DR_LOG_ALL, 3, "%s @" PFX ": ignoring restore\n",
-								__FUNCTION__, pc);
-					}
-				}
+                if (is_xmm_spill) {
+                    if (spilled_xmm_to[XMM_IDX(reg)] == slot)
+                        spilled_xmm_to[XMM_IDX(reg)] = MAX_XMM_SPILLS;
+                    else {
+                        LOG(drcontext, DR_LOG_ALL, 3, "%s @" PFX ": ignoring restore\n",
+                            __FUNCTION__, pc);
+                    }
+                } else {
+                    if (slot == AFLAGS_SLOT && spilled_to_aflags == slot)
+                        spilled_to_aflags = MAX_SPILLS;
+                    else if (spilled_to[GPR_IDX(reg)] == slot)
+                        spilled_to[GPR_IDX(reg)] = MAX_SPILLS;
+                    else {
+                        LOG(drcontext, DR_LOG_ALL, 3, "%s @" PFX ": ignoring restore\n",
+                            __FUNCTION__, pc);
+                    }
+                }
             }
 #ifdef X86
             if (reg == DR_REG_XAX) {
@@ -2546,14 +2558,13 @@ drreg_event_restore_state(void *drcontext, bool restore_memory,
         if (spilled_xmm_to[XMM_IDX(reg)] < MAX_XMM_SPILLS) {
 
 #ifdef DEBUG
-			bool succ =
+            bool succ =
 #endif
-			get_xmm_spilled_value(drcontext, spilled_to[XMM_IDX(reg)], xmm_buf,
-					REG_XMM_SIZE);
+                get_xmm_spilled_value(drcontext, spilled_to[XMM_IDX(reg)], xmm_buf,
+                                      REG_XMM_SIZE);
 #ifdef DEBUG
-			ASSERT(succ, "failed to get xmm spilled value");
+            ASSERT(succ, "failed to get xmm spilled value");
 #endif
-
         }
     }
 
@@ -2636,140 +2647,139 @@ drreg_thread_exit(void *drcontext)
     dr_thread_free(drcontext, pt, sizeof(*pt));
 }
 
-drreg_status_t drreg_init(drreg_options_t *ops_in) {
-	uint prior_slots = ops.num_spill_slots;
-	uint num_spill_slots;
-	drmgr_priority_t high_priority = { sizeof(high_priority),
-			DRMGR_PRIORITY_NAME_DRREG_HIGH, NULL, NULL,
-			DRMGR_PRIORITY_INSERT_DRREG_HIGH };
-	drmgr_priority_t low_priority = { sizeof(low_priority),
-			DRMGR_PRIORITY_NAME_DRREG_LOW, NULL, NULL,
-			DRMGR_PRIORITY_INSERT_DRREG_LOW };
-	drmgr_priority_t fault_priority = { sizeof(fault_priority),
-			DRMGR_PRIORITY_NAME_DRREG_FAULT, NULL, NULL,
-			DRMGR_PRIORITY_FAULT_DRREG };
+drreg_status_t
+drreg_init(drreg_options_t *ops_in)
+{
+    uint prior_slots = ops.num_spill_slots;
+    uint num_spill_slots;
+    drmgr_priority_t high_priority = { sizeof(high_priority),
+                                       DRMGR_PRIORITY_NAME_DRREG_HIGH, NULL, NULL,
+                                       DRMGR_PRIORITY_INSERT_DRREG_HIGH };
+    drmgr_priority_t low_priority = { sizeof(low_priority), DRMGR_PRIORITY_NAME_DRREG_LOW,
+                                      NULL, NULL, DRMGR_PRIORITY_INSERT_DRREG_LOW };
+    drmgr_priority_t fault_priority = { sizeof(fault_priority),
+                                        DRMGR_PRIORITY_NAME_DRREG_FAULT, NULL, NULL,
+                                        DRMGR_PRIORITY_FAULT_DRREG };
 
-	int count = dr_atomic_add32_return_sum(&drreg_init_count, 1);
-	if (count == 1) {
-		drmgr_init();
+    int count = dr_atomic_add32_return_sum(&drreg_init_count, 1);
+    if (count == 1) {
+        drmgr_init();
 
-		if (!drmgr_register_thread_init_event(drreg_thread_init)
-				|| !drmgr_register_thread_exit_event(drreg_thread_exit))
-			return DRREG_ERROR;
-		tls_idx = drmgr_register_tls_field();
-		if (tls_idx == -1)
-			return DRREG_ERROR;
+        if (!drmgr_register_thread_init_event(drreg_thread_init) ||
+            !drmgr_register_thread_exit_event(drreg_thread_exit))
+            return DRREG_ERROR;
+        tls_idx = drmgr_register_tls_field();
+        if (tls_idx == -1)
+            return DRREG_ERROR;
 
-		if (!drmgr_register_bb_instrumentation_event(NULL,
-				drreg_event_bb_insert_early, &high_priority)
-				|| !drmgr_register_bb_instrumentation_event(
-						drreg_event_bb_analysis, drreg_event_bb_insert_late,
-						&low_priority)
-				|| !drmgr_register_restore_state_ex_event_ex(
-						drreg_event_restore_state, &fault_priority))
-			return DRREG_ERROR;
+        if (!drmgr_register_bb_instrumentation_event(NULL, drreg_event_bb_insert_early,
+                                                     &high_priority) ||
+            !drmgr_register_bb_instrumentation_event(
+                drreg_event_bb_analysis, drreg_event_bb_insert_late, &low_priority) ||
+            !drmgr_register_restore_state_ex_event_ex(drreg_event_restore_state,
+                                                      &fault_priority))
+            return DRREG_ERROR;
 #ifdef X86
-		/* We get an extra slot for aflags xax, rather than just documenting that
-		 * clients should add 2 instead of just 1, as there are many existing clients.
-		 */
-		ops.num_spill_slots = 1;
+        /* We get an extra slot for aflags xax, rather than just documenting that
+         * clients should add 2 instead of just 1, as there are many existing clients.
+         */
+        ops.num_spill_slots = 1;
 #endif
-		/* Support use during init when there is no TLS (i#2910). */
-		tls_data_init(&init_pt);
-	}
+        /* Support use during init when there is no TLS (i#2910). */
+        tls_data_init(&init_pt);
+    }
 
-	if (ops_in->struct_size < offsetof(drreg_options_t, error_callback))
-		return DRREG_ERROR_INVALID_PARAMETER;
+    if (ops_in->struct_size < offsetof(drreg_options_t, error_callback))
+        return DRREG_ERROR_INVALID_PARAMETER;
 
-	/* Instead of allowing only one drreg_init() and all other components to be
-	 * passed in scratch regs by a master, which is not always an easy-to-use
-	 * model, we instead consider all callers' requests, combining the option
-	 * fields.  We don't shift init to drreg_thread_init() or sthg b/c we really
-	 * want init-time error codes returning from drreg_init().
-	 */
+    /* Instead of allowing only one drreg_init() and all other components to be
+     * passed in scratch regs by a master, which is not always an easy-to-use
+     * model, we instead consider all callers' requests, combining the option
+     * fields.  We don't shift init to drreg_thread_init() or sthg b/c we really
+     * want init-time error codes returning from drreg_init().
+     */
 
-	/* Sum the spill slots, honoring a new or prior do_not_sum_slots by taking
-	 * the max instead of summing.
-	 */
-	if (ops_in->struct_size > offsetof(drreg_options_t, do_not_sum_slots)) {
-		if (ops_in->do_not_sum_slots) {
-			if (ops_in->num_spill_slots > ops.num_spill_slots)
-				ops.num_spill_slots = ops_in->num_spill_slots;
-		} else
-			ops.num_spill_slots += ops_in->num_spill_slots;
-		ops.do_not_sum_slots = ops_in->do_not_sum_slots;
-	} else {
-		if (ops.do_not_sum_slots) {
-			if (ops_in->num_spill_slots > ops.num_spill_slots)
-				ops.num_spill_slots = ops_in->num_spill_slots;
-		} else
-			ops.num_spill_slots += ops_in->num_spill_slots;
-		ops.do_not_sum_slots = false;
-	}
+    /* Sum the spill slots, honoring a new or prior do_not_sum_slots by taking
+     * the max instead of summing.
+     */
+    if (ops_in->struct_size > offsetof(drreg_options_t, do_not_sum_slots)) {
+        if (ops_in->do_not_sum_slots) {
+            if (ops_in->num_spill_slots > ops.num_spill_slots)
+                ops.num_spill_slots = ops_in->num_spill_slots;
+        } else
+            ops.num_spill_slots += ops_in->num_spill_slots;
+        ops.do_not_sum_slots = ops_in->do_not_sum_slots;
+    } else {
+        if (ops.do_not_sum_slots) {
+            if (ops_in->num_spill_slots > ops.num_spill_slots)
+                ops.num_spill_slots = ops_in->num_spill_slots;
+        } else
+            ops.num_spill_slots += ops_in->num_spill_slots;
+        ops.do_not_sum_slots = false;
+    }
 
-	/* If anyone wants to be conservative, then be conservative. */
-	ops.conservative = ops.conservative || ops_in->conservative;
+    /* If anyone wants to be conservative, then be conservative. */
+    ops.conservative = ops.conservative || ops_in->conservative;
 
-	/* The first callback wins. */
-	if (ops_in->struct_size > offsetof(drreg_options_t, error_callback)
-			&& ops.error_callback == NULL)
-		ops.error_callback = ops_in->error_callback;
+    /* The first callback wins. */
+    if (ops_in->struct_size > offsetof(drreg_options_t, error_callback) &&
+        ops.error_callback == NULL)
+        ops.error_callback = ops_in->error_callback;
 
+    if (prior_slots > 0) {
 
-	if (prior_slots > 0) {
+        /* To cater for the additional slot of the xmm block ptr. */
+        prior_slots++;
 
-		/* To cater for the additional slot of the xmm block ptr. */
-		prior_slots++;
+        if (!dr_raw_tls_cfree(tls_main_offs, prior_slots))
+            return DRREG_ERROR;
+    }
 
-		if (!dr_raw_tls_cfree(tls_main_offs, prior_slots))
-			return DRREG_ERROR;
-	}
+    num_spill_slots = ops.num_spill_slots;
+    /* We always add an additional slot for xmm block ptr */
+    num_spill_slots++;
 
-	num_spill_slots = ops.num_spill_slots;
-	/* We always add an additional slot for xmm block ptr */
-	num_spill_slots++;
+    /* 0 spill slots is supported and just fills in tls_seg for us. */
+    if (!dr_raw_tls_calloc(&tls_seg, &tls_main_offs, num_spill_slots, 0))
+        return DRREG_ERROR_OUT_OF_SLOTS;
 
-	/* 0 spill slots is supported and just fills in tls_seg for us. */
-	if (!dr_raw_tls_calloc(&tls_seg, &tls_main_offs, num_spill_slots, 0))
-		return DRREG_ERROR_OUT_OF_SLOTS;
+    tls_slot_offs = tls_main_offs + sizeof(void *);
 
-	tls_slot_offs = tls_main_offs + sizeof(void *);
-
-	return DRREG_SUCCESS;
+    return DRREG_SUCCESS;
 }
 
-drreg_status_t drreg_exit(void) {
-	uint num_spill_slots;
-	int count = dr_atomic_add32_return_sum(&drreg_init_count, -1);
-	if (count != 0)
-		return DRREG_SUCCESS;
+drreg_status_t
+drreg_exit(void)
+{
+    uint num_spill_slots;
+    int count = dr_atomic_add32_return_sum(&drreg_init_count, -1);
+    if (count != 0)
+        return DRREG_SUCCESS;
 
-	tls_data_free(&init_pt);
+    tls_data_free(&init_pt);
 
-	if (!drmgr_unregister_thread_init_event(drreg_thread_init)
-			|| !drmgr_unregister_thread_exit_event(drreg_thread_exit))
-		return DRREG_ERROR;
+    if (!drmgr_unregister_thread_init_event(drreg_thread_init) ||
+        !drmgr_unregister_thread_exit_event(drreg_thread_exit))
+        return DRREG_ERROR;
 
-	drmgr_unregister_tls_field(tls_idx);
-	if (!drmgr_unregister_bb_insertion_event(drreg_event_bb_insert_early)
-			|| !drmgr_unregister_bb_instrumentation_event(
-					drreg_event_bb_analysis)
-			|| !drmgr_unregister_restore_state_ex_event(
-					drreg_event_restore_state))
-		return DRREG_ERROR;
+    drmgr_unregister_tls_field(tls_idx);
+    if (!drmgr_unregister_bb_insertion_event(drreg_event_bb_insert_early) ||
+        !drmgr_unregister_bb_instrumentation_event(drreg_event_bb_analysis) ||
+        !drmgr_unregister_restore_state_ex_event(drreg_event_restore_state))
+        return DRREG_ERROR;
 
-	drmgr_exit();
+    drmgr_exit();
 
-	num_spill_slots = ops.num_spill_slots;
+    num_spill_slots = ops.num_spill_slots;
 
-		// We always add an additional slot for xmm block ptr.
-		num_spill_slots++;
+    // We always add an additional slot for xmm block ptr.
+    num_spill_slots++;
 
-		if (!dr_raw_tls_cfree(tls_main_offs, num_spill_slots))
-			return DRREG_ERROR;
+    if (!dr_raw_tls_cfree(tls_main_offs, num_spill_slots))
+        return DRREG_ERROR;
 
-	/* Support re-attach */
-	memset(&ops, 0, sizeof(ops));
+    /* Support re-attach */
+    memset(&ops, 0, sizeof(ops));
 
-	return DRREG_SUCCESS;
+    return DRREG_SUCCESS;
 }

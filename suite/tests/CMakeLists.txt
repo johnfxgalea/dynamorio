@@ -2074,6 +2074,12 @@ if (CLIENT_INTERFACE)
       ${CMAKE_CURRENT_SOURCE_DIR}/client-interface)
   endif (ARM)
 
+  tobuild_ci(client.drreg-xmm-test client-interface/drreg-xmm-test.c "" "" "")
+  use_DynamoRIO_extension(client.drreg-xmm-test.dll drmgr)
+  use_DynamoRIO_extension(client.drreg-xmm-test.dll drreg)
+  target_include_directories(client.drreg-xmm-test PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/client-interface)
+
   tobuild_ci(client.drreg-test client-interface/drreg-test.c "" "" "")
   use_DynamoRIO_extension(client.drreg-test.dll drmgr)
   use_DynamoRIO_extension(client.drreg-test.dll drreg)

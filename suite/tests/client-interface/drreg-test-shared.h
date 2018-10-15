@@ -31,6 +31,8 @@
  */
 
 #ifdef X86
+#    define TEST_REG_XMM1 DR_REG_XMM1
+#    define TEST_REG_XMM1_ASM xmm0
 #    define TEST_REG DR_REG_XDX
 #    define TEST_REG_ASM REG_XDX
 #    define TEST_REG_ASM_LSB dl
