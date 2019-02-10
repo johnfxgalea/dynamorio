@@ -346,6 +346,11 @@ drreg_reserve_register(void *drcontext, instrlist_t *ilist, instr_t *where,
                        drvector_t *reg_allowed, OUT reg_id_t *reg);
 
 DR_EXPORT
+drreg_status_t
+drreg_reserve_xmm_register(void *drcontext, instrlist_t *ilist, instr_t *where,
+                       drvector_t *reg_allowed, OUT reg_id_t *reg_out);
+
+DR_EXPORT
 /**
  * Identical to drreg_reserve_register() except returns failure if no
  * register is available that does not require a spill.
@@ -355,6 +360,11 @@ DR_EXPORT
 drreg_status_t
 drreg_reserve_dead_register(void *drcontext, instrlist_t *ilist, instr_t *where,
                             drvector_t *reg_allowed, OUT reg_id_t *reg);
+
+DR_EXPORT
+drreg_status_t
+drreg_reserve_dead_xmm_register(void *drcontext, instrlist_t *ilist, instr_t *where,
+                            drvector_t *reg_allowed, OUT reg_id_t *reg_out);
 
 DR_EXPORT
 /**
@@ -369,6 +379,9 @@ DR_EXPORT
 drreg_status_t
 drreg_init_and_fill_vector(drvector_t *vec, bool allowed);
 
+DR_EXPORT drreg_status_t
+drreg_init_and_fill_xmm_vector(drvector_t *vec, bool allowed);
+
 DR_EXPORT
 /**
  * Sets the entry in \p vec at index \p reg minus #DR_REG_START_GPR to
@@ -380,6 +393,10 @@ DR_EXPORT
  */
 drreg_status_t
 drreg_set_vector_entry(drvector_t *vec, reg_id_t reg, bool allowed);
+
+DR_EXPORT
+drreg_status_t
+drreg_set_vector_xmm_entry(drvector_t *vec, reg_id_t reg, bool allowed);
 
 DR_EXPORT
 /**
@@ -560,6 +577,11 @@ drreg_unreserve_register(void *drcontext, instrlist_t *ilist, instr_t *where,
                          reg_id_t reg);
 
 DR_EXPORT
+drreg_status_t drreg_unreserve_xmm_register(void *drcontext, instrlist_t *ilist,
+        instr_t *where, reg_id_t reg);
+
+
+DR_EXPORT
 /**
  * Returns in \p dead whether the register \p reg is dead at the
  * point of \p inst.  If called during drmgr's insertion phase, \p
@@ -569,6 +591,10 @@ DR_EXPORT
  */
 drreg_status_t
 drreg_is_register_dead(void *drcontext, reg_id_t reg, instr_t *inst, bool *dead);
+
+DR_EXPORT
+drreg_status_t drreg_is_xmm_register_dead(void *drcontext, reg_id_t reg,
+        instr_t *inst, bool *dead);
 
 DR_EXPORT
 /**
@@ -594,7 +620,7 @@ DR_EXPORT
  */
 drreg_status_t
 drreg_is_instr_spill_or_restore(void *drcontext, instr_t *instr, bool *spill OUT,
-                                bool *restore OUT, reg_id_t *reg_spilled OUT);
+                                bool *restore OUT, reg_id_t *reg_spilled OUT, bool *is_xmm OUT);
 
 /*@}*/ /* end doxygen group */
 
