@@ -518,8 +518,8 @@ drreg_event_bb_insert_early(void *drcontext, void *tag, instrlist_t *bb, instr_t
 }
 
 static dr_emit_flags_t
-drreg_event_bb_insert_late(void *drcontext, void *tag, instrlist_t *bb, instr_t *inst,
-                           bool for_trace, bool translating, void *user_data)
+drreg_restore_all_helper(void *drcontext, instrlist_t *bb, instr_t *inst,
+                         bool restore_now)
 {
     per_thread_t *pt = get_tls_data(drcontext);
     reg_id_t reg;
@@ -539,7 +539,8 @@ drreg_event_bb_insert_late(void *drcontext, void *tag, instrlist_t *bb, instr_t 
     /* Before each app read, or at end of bb, restore aflags to app value */
     uint aflags = (uint)(ptr_uint_t)drvector_get_entry(&pt->aflags.live, pt->live_idx);
     if (!pt->aflags.native &&
-        (drmgr_is_last_instr(drcontext, inst) ||
+         ((drmgr_is_last_instr(drcontext, inst) && !TEST(DRREG_IGNORE_BB_END_RESTORE, pt->bb_props)) ||
+         restore_now ||
          TESTANY(EFLAGS_READ_ARITH, instr_get_eflags(inst, DR_QUERY_DEFAULT)) ||
          /* Writing just a subset needs to combine with the original unwritten */
          (TESTANY(EFLAGS_WRITE_ARITH, instr_get_eflags(inst, DR_QUERY_INCLUDE_ALL)) &&
@@ -557,12 +558,16 @@ drreg_event_bb_insert_late(void *drcontext, void *tag, instrlist_t *bb, instr_t 
             pt->aflags.native = true;
             pt->slot_use[AFLAGS_SLOT] = DR_REG_NULL;
         }
+
+        if (restore_now)
+            DR_ASSERT(pt->aflags.native);
     }
 
     for (reg = DR_REG_START_XMM; reg <= DR_REG_APPLICABLE_STOP_XMM; reg++) {
         restored_for_xmm_read[XMM_IDX(reg)] = false;
         if (!pt->xmm_reg[XMM_IDX(reg)].native) {
-            if (drmgr_is_last_instr(drcontext, inst) ||
+            if ((drmgr_is_last_instr(drcontext, inst) && !TEST(DRREG_IGNORE_BB_END_RESTORE, pt->bb_props)) ||
+                restore_now ||
                 instr_reads_from_reg(inst, reg, DR_QUERY_INCLUDE_ALL) ||
                 /* Treat a partial write as a read, to restore rest of reg */
                 (instr_writes_to_reg(inst, reg, DR_QUERY_INCLUDE_ALL) &&
@@ -617,6 +622,9 @@ drreg_event_bb_insert_late(void *drcontext, void *tag, instrlist_t *bb, instr_t 
                     /* We keep .native==false */
                     drreg_unreserve_register(drcontext, bb, next, xmm_block_reg);
                 }
+
+                if (restore_now)
+                    DR_ASSERT(pt->xmm_reg[XMM_IDX(reg)].native);
             }
         }
     }
@@ -625,7 +633,8 @@ drreg_event_bb_insert_late(void *drcontext, void *tag, instrlist_t *bb, instr_t 
     for (reg = DR_REG_START_GPR; reg <= DR_REG_STOP_GPR; reg++) {
         restored_for_read[GPR_IDX(reg)] = false;
         if (!pt->reg[GPR_IDX(reg)].native) {
-            if (drmgr_is_last_instr(drcontext, inst) ||
+            if ((drmgr_is_last_instr(drcontext, inst) && !TEST(DRREG_IGNORE_BB_END_RESTORE, pt->bb_props)) ||
+                restore_now ||
                 instr_reads_from_reg(inst, reg, DR_QUERY_INCLUDE_ALL) ||
                 /* Treat a partial write as a read, to restore rest of reg */
                 (instr_writes_to_reg(inst, reg, DR_QUERY_INCLUDE_ALL) &&
@@ -687,6 +696,9 @@ drreg_event_bb_insert_late(void *drcontext, void *tag, instrlist_t *bb, instr_t 
                     restored_for_read[GPR_IDX(reg)] = true;
                     /* We keep .native==false */
                 }
+
+                if (restore_now)
+                    DR_ASSERT(pt->reg[GPR_IDX(reg)].native);
             }
         }
     }
@@ -879,6 +891,20 @@ drreg_event_bb_insert_late(void *drcontext, void *tag, instrlist_t *bb, instr_t 
 #endif
     instrlist_set_auto_predicate(bb, pred);
     return DR_EMIT_DEFAULT;
+}
+
+
+static dr_emit_flags_t
+drreg_event_bb_insert_late(void *drcontext, void *tag, instrlist_t *bb, instr_t *inst,
+                           bool for_trace, bool translating, void *user_data)
+{
+    return drreg_restore_all_helper(drcontext, bb, inst, false);
+}
+
+drreg_status_t
+drreg_restore_all_now(void *drcontext, instrlist_t *bb, instr_t *inst)
+{
+    return drreg_restore_all_helper(drcontext, bb, inst, true);
 }
 
 /***************************************************************************
@@ -2234,6 +2260,8 @@ is_our_spill_or_restore(void *drcontext, instr_t *instr, bool *spill OUT,
         offs < (tls_slot_offs + ops.num_spill_slots * sizeof(reg_t))) {
         slot = (offs - tls_slot_offs) / sizeof(reg_t);
     } else if (tls && offs == tls_main_offs && !(is_spilled)) {
+
+        DR_ASSERT(false);
         instr_t *xmm_hndle_instr = instr_get_next(instr);
         DR_ASSERT(instr_get_opcode(xmm_hndle_instr) == OP_movdqu);
 
