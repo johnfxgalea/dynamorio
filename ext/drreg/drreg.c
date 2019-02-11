@@ -2252,6 +2252,8 @@ is_our_spill_or_restore(void *drcontext, instr_t *instr, bool *spill OUT,
     bool is_xmm;
 
     is_xmm = false;
+    if (is_xmm_spilled != NULL)
+        *is_xmm_spilled = is_xmm;
 
     if (!instr_is_reg_spill_or_restore(drcontext, instr, &tls, &is_spilled, &reg, &offs))
         return false;
