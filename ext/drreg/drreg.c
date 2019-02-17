@@ -195,7 +195,7 @@ static bool
 is_applicable_xmm(reg_id_t xmm_reg)
 {
     if (reg_is_xmm(xmm_reg) && xmm_reg >= DR_REG_START_XMM &&
-        xmm_reg < DR_REG_APPLICABLE_STOP_XMM)
+        xmm_reg <= DR_REG_APPLICABLE_STOP_XMM)
         return true;
 
     return false;
@@ -2241,9 +2241,9 @@ drreg_restore_app_aflags(void *drcontext, instrlist_t *ilist, instr_t *where)
  */
 
 static bool
-is_our_spill_or_restore(void *drcontext, instr_t *instr, bool *spill OUT,
-                        reg_id_t *reg_spilled OUT, uint *slot_out OUT, uint *offs_out OUT,
-                        bool *is_xmm_spilled OUT)
+is_our_spill_or_restore(void *drcontext, instr_t *instr, instr_t *next_instr,
+                        bool *spill OUT, reg_id_t *reg_spilled OUT, uint *slot_out OUT,
+                        uint *offs_out OUT, bool *is_xmm_spilled OUT)
 {
     bool tls;
     uint slot, offs;
@@ -2263,31 +2263,24 @@ is_our_spill_or_restore(void *drcontext, instr_t *instr, bool *spill OUT,
         slot = (offs - tls_slot_offs) / sizeof(reg_t);
     } else if (tls && offs == tls_main_offs && !(is_spilled)) {
 
-        DR_ASSERT(false);
-        instr_t *xmm_hndle_instr = instr_get_next(instr);
-        DR_ASSERT(instr_get_opcode(xmm_hndle_instr) == OP_movdqu);
+        DR_ASSERT(next_instr);
+        DR_ASSERT(instr_get_opcode(next_instr) == OP_movdqu);
 
         is_xmm = true;
-
-        opnd_t dst = instr_get_dst(xmm_hndle_instr, 0);
-        opnd_t src = instr_get_dst(xmm_hndle_instr, 0);
-
+        opnd_t dst = instr_get_dst(next_instr, 0);
+        opnd_t src = instr_get_src(next_instr, 0);
         if (opnd_is_reg(dst) && reg_is_xmm(opnd_get_reg(dst)) && opnd_is_base_disp(src)) {
             reg = opnd_get_reg(dst);
             is_spilled = false;
             int disp = opnd_get_disp(src);
             slot = disp / REG_XMM_SIZE;
-
         } else if (opnd_is_reg(src) && reg_is_xmm(opnd_get_reg(src)) &&
                    opnd_is_base_disp(dst)) {
-
             reg = opnd_get_reg(src);
             is_spilled = true;
             int disp = opnd_get_disp(dst);
             slot = disp / REG_XMM_SIZE;
-
         } else {
-
             slot = -1;
             DR_ASSERT_MSG(false,
                           "Loaded xmm base but no access to slots. This cannot be true.");
@@ -2365,8 +2358,8 @@ drreg_is_instr_spill_or_restore(void *drcontext, instr_t *instr, bool *spill OUT
                                 bool *is_xmm OUT)
 {
     bool is_spill;
-    if (!is_our_spill_or_restore(drcontext, instr, &is_spill, reg_spilled, NULL, NULL,
-                                 is_xmm)) {
+    if (!is_our_spill_or_restore(drcontext, instr, instr_get_next(instr), &is_spill,
+                                 reg_spilled, NULL, NULL, is_xmm)) {
         if (spill != NULL)
             *spill = false;
         if (restore != NULL)
@@ -2397,6 +2390,7 @@ drreg_event_restore_state(void *drcontext, bool restore_memory,
     uint spilled_xmm_to[NUM_SIMD_SLOTS];
     reg_id_t reg;
     instr_t inst;
+    instr_t next_inst;
     byte *prev_pc, *pc = info->fragment_info.cache_start_pc;
     uint offs;
     bool spill;
@@ -2420,13 +2414,17 @@ drreg_event_restore_state(void *drcontext, bool restore_memory,
         "%s: processing fault @" PFX ": decoding from " PFX "\n", __FUNCTION__,
         info->raw_mcontext->pc, pc);
     instr_init(drcontext, &inst);
+    instr_init(drcontext, &next_inst);
+
     while (pc < info->raw_mcontext->pc) {
         instr_reset(drcontext, &inst);
+        instr_reset(drcontext, &next_inst);
         prev_pc = pc;
         pc = decode(drcontext, pc, &inst);
+        decode(drcontext, pc, &next_inst);
 
-        if (is_our_spill_or_restore(drcontext, &inst, &spill, &reg, &slot, &offs,
-                                    &is_xmm_spill)) {
+        if (is_our_spill_or_restore(drcontext, &inst, &next_inst, &spill, &reg, &slot,
+                                    &offs, &is_xmm_spill)) {
             LOG(drcontext, DR_LOG_ALL, 3,
                 "%s @" PFX " found %s to %s offs=0x%x => slot %d\n", __FUNCTION__,
                 prev_pc, spill ? "spill" : "restore", get_register_name(reg), offs, slot);
@@ -2494,6 +2492,7 @@ drreg_event_restore_state(void *drcontext, bool restore_memory,
 #endif
     }
     instr_free(drcontext, &inst);
+    instr_free(drcontext, &next_inst);
 
     if (spilled_to_aflags < MAX_SPILLS IF_X86(|| aflags_in_xax)) {
         reg_t newval = info->mcontext->xflags;
