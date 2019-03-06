@@ -100,7 +100,7 @@ static uint drbbdup_count_dups(drbbdup_manager_t *manager) {
     uint count = 1;
 
     int i = 0;
-    for (i = 0; i < 3; i++) {
+    for (i = 0; i < NUMBER_OF_DUPS; i++) {
 
         /* If case is defined, increment the counter */
         if (manager->cases[i].is_defined)
@@ -362,7 +362,7 @@ static void drbbdup_analyse_bbs(void *drcontext, instrlist_t *bb, instr_t *strt,
     }
 
     // Instrument cases.
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < NUMBER_OF_DUPS; i++) {
 
         case_info = &(manager->cases[i]);
         if (case_info->is_defined) {
@@ -446,7 +446,7 @@ static void drbbdup_set_case_labels(void *drcontext, instrlist_t *bb,
     }
 
     /* Instrument cases. */
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < NUMBER_OF_DUPS; i++) {
         case_info = &(manager->cases[i]);
         if (case_info->is_defined) {
 
@@ -469,7 +469,7 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation,
     // TODO Look into ways to make this more efficient. Perhaps a jump table but requires more memory.
     // Inlined hash table might also work here but my intuition says it's not the best approach in this case.
 
-    instr_t *labels[4];
+    instr_t *labels[(NUMBER_OF_DUPS + 1)];
     drbbdup_set_case_labels(drcontext, bb, where, manager, labels);
 
     /* Call user function to get comparison */
@@ -503,7 +503,7 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation,
     DR_ASSERT(default_info != NULL);
 
     int i;
-    for (i = 1; i < 4; i++) {
+    for (i = 1; i < (NUMBER_OF_DUPS + 1); i++) {
 
         label = labels[i];
         case_info = &(manager->cases[i - 1]);
@@ -600,14 +600,14 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 
         drbbdup_label_t label_info;
         bool result = drbbdup_is_at_end_ex(drcontext, instr, &label_info);
-        DR_ASSERT(pt->case_index - 1 < 3 || pt->case_index == -1);
+        DR_ASSERT(pt->case_index - 1 < NUMBER_OF_DUPS || pt->case_index == -1);
 
         if (result && label_info == DRBBDUP_LABEL_NORMAL) {
             /* We have reached the start of a new case! */
 
             bool found = false;
             int i;
-            for (i = pt->case_index + 1; i < 4; i++) {
+            for (i = pt->case_index + 1; i < (NUMBER_OF_DUPS + 1); i++) {
 
                 drbbdup_case = &(manager->cases[i - 1]);
 
@@ -708,7 +708,7 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
             /* Find an undefined case, and set it up for the new conditional. */
             bool found = false;
             int i;
-            for (i = 0; i < 3; i++) {
+            for (i = 0; i < NUMBER_OF_DUPS; i++) {
 
                 if (!(manager->cases[i].is_defined)) {
 
@@ -791,7 +791,7 @@ static void drbbdup_destroy_manager(void *manager_opaque) {
         opts.destroy_case_user_data(case_info->user_data);
     }
 
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < NUMBER_OF_DUPS; i++) {
 
         case_info = &(manager->cases[i]);
 

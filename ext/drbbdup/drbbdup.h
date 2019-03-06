@@ -6,6 +6,13 @@
 #include "drvector.h"
 
 /**
+ * To change the number of fast paths simply set the following number.
+ * I am not sure if I should give the user the option to change this at runtime.
+ * Those who really care, can just change and compile Dr. I am a fan of less options!
+ */
+#define NUMBER_OF_DUPS 3
+
+/**
  * @file drbbdup.h
  * @brief Header for DynamoRIO Basic Block Duplication Management Extension
  */
@@ -62,7 +69,7 @@ typedef struct {
 typedef struct {
 
     drbbdup_case_t default_case;
-    drbbdup_case_t cases[3];
+    drbbdup_case_t cases[NUMBER_OF_DUPS];
     void *user_data;
 } drbbdup_manager_t;
 
