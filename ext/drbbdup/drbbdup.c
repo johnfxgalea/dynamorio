@@ -17,6 +17,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <signal.h>
+#include "../ext_utils.h"
 
 #define HASH_BIT_TABLE 8
 
@@ -55,7 +56,6 @@ drbbdup_options_t opts;
 static int tls_idx = -1;
 
 typedef struct {
-
     int case_index;
 } drbbdup_per_thread;
 
@@ -92,6 +92,7 @@ opnd_t drbbdup_get_comparator_opnd() {
 
 /* Returns the number of bb versions.*/
 static uint drbbdup_count_dups(drbbdup_manager_t *manager) {
+
     DR_ASSERT(manager);
     DR_ASSERT(manager->default_case.is_defined);
 
@@ -135,14 +136,13 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     /* If the bb is less than the required size, bb duplication is skipped.
      */
     size_t cur_size = 0;
-    for (first = instrlist_first_app(bb); first != NULL;
-            first = instr_get_next_app(first))
+    for (first = instrlist_first_app(bb); first != NULL; first =
+            instr_get_next_app(first))
         cur_size++;
 
-    if (cur_size < opts.required_size){
+    if (cur_size < opts.required_size) {
         return DR_EMIT_DEFAULT;
     }
-
 
     /* Use the PC of the fragment as the key! */
     app_pc pc = dr_fragment_app_pc(tag);
@@ -153,6 +153,9 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
             &case_manager_table, pc);
     if (manager == NULL) {
         /* If manager is not available, we need to create a default one */
+
+        /* First creation should be done when translation is off */
+        // Not sure: I think I can assert this.... maybe?
         manager = dr_global_alloc(sizeof(drbbdup_manager_t));
         memset(manager, 0, sizeof(drbbdup_manager_t));
         DR_ASSERT(opts.create_manager);
@@ -161,9 +164,8 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
         hashtable_add(&case_manager_table, pc, manager);
     }
-
     hashtable_unlock(&case_manager_table);
-    DR_ASSERT(manager!= NULL);
+    DR_ASSERT(manager != NULL);
 
     /* Let's perform the duplication */
     uint count = drbbdup_count_dups(manager);
@@ -323,10 +325,11 @@ static instrlist_t *drbbdup_derive_case_bb(void *drcontext, instrlist_t *bb,
     instr_t *instr = *start;
     while (!drbbdup_is_at_end(drcontext, instr)) {
 
-        DR_ASSERT(instr_is_app(instr));
         instr_t *instr_cpy = instr_clone(drcontext, instr);
         instrlist_append(case_bb, instr_cpy);
+
         instr = instr_get_next(instr);
+
     }
 
     *start = instr;
@@ -383,6 +386,7 @@ static dr_emit_flags_t drbbdup_analyse_phase(void *drcontext, void *tag,
     app_pc pc = dr_fragment_app_pc(tag);
 
     hashtable_lock(&case_manager_table);
+
     drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
             &case_manager_table, pc);
     hashtable_unlock(&case_manager_table);
@@ -462,14 +466,14 @@ static void drbbdup_set_case_labels(void *drcontext, instrlist_t *bb,
 static void drbbdup_insert_jumps(void *drcontext, app_pc translation,
         instrlist_t *bb, instr_t *where, drbbdup_manager_t *manager) {
 
-    // TODO Look into ways to make this more efficient. Perhaps a jump table.
+    // TODO Look into ways to make this more efficient. Perhaps a jump table but requires more memory.
+    // Inlined hash table might also work here but my intuition says it's not the best approach in this case.
 
     instr_t *labels[4];
     drbbdup_set_case_labels(drcontext, bb, where, manager, labels);
 
     /* Call user function to get comparison */
-    opts.get_comparator(drcontext, bb, where, manager,
-            opts.user_data);
+    opts.get_comparator(drcontext, bb, where, manager, opts.user_data);
 
     /* Restore unreserved registers */
     drreg_restore_all_now(drcontext, bb, where);
@@ -480,7 +484,6 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation,
     dr_save_reg(drcontext, bb, where, DR_REG_XCX, SPILL_SLOT_6);
 
     /* Load comparator */
-
     opnd_t store_opnd = drbbdup_get_comparator_opnd();
     opnd_t comparator_opnd = opnd_create_reg(DR_REG_XCX);
     instrlist_meta_preinsert(bb, where,
@@ -526,6 +529,7 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation,
     }
 
     if (include_faulty) {
+
         /* If conditional is not defined, check whether default check
          * does not match and jump to fault.
          */
@@ -582,10 +586,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
         DR_ASSERT(instr_is_label(instr));
 
         /* Insert jumps. */
-        instr_t *first_instr_default_bb = instr_get_next_app(instr);
-        app_pc translation = instr_get_app_pc(first_instr_default_bb);
-        drbbdup_insert_jumps(drcontext, translation, bb, instr, manager);
-
+        drbbdup_insert_jumps(drcontext, pc, bb, instr, manager);
         drbbdup_insert_landing_restoration(drcontext, bb,
                 instr_get_next(instr));
 
@@ -675,15 +676,18 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
 
         if (drbbdup_accessed_faulty_page(target)) {
 
-            /* Get key via dr_fragment_app_pc(). */
-            void *tag = info->fault_fragment_info.tag;
-            app_pc bb_pc = dr_fragment_app_pc(tag);
+            /* Do not use fault fragment data because it could concern a trace.
+             * Instead, use the translation.
+             */
+            app_pc bb_pc = info->mcontext->pc;
 
             /* Look up case manager */
             hashtable_lock(&case_manager_table);
             drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
                     &case_manager_table, bb_pc);
             hashtable_unlock(&case_manager_table);
+
+            DR_ASSERT(manager);
 
             /*
              * Get the conditional value that failed.
@@ -707,6 +711,7 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
             for (i = 0; i < 3; i++) {
 
                 if (!(manager->cases[i].is_defined)) {
+
                     manager->cases[i].is_defined = true;
                     found = true;
 
@@ -724,12 +729,24 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
              * in DR's cache. We then redirect execution to app code, which will
              * then lead DR to emit a new bb. This time, the bb will include the handle
              * for our new case which is tracked by the manager.
-             *
-             * Arbitrary size of 10.
              */
-            dr_flush_region(info->mcontext->pc, 10);
 
-            info->raw_mcontext->xflags = info->raw_mcontext->xax;
+            bool succ = dr_flush_region(info->mcontext->pc, 1);
+            DR_ASSERT(succ);
+
+            // Eflag restoration is taken from drreg. Should move it upon release.
+            reg_t newval = info->mcontext->xflags;
+            reg_t val;
+            uint sahf;
+
+            val = info->mcontext->xax;
+            sahf = (val & 0xff00) >> 8;
+            newval &= ~(EFLAGS_ARITH);
+            newval |= sahf;
+            if (TEST(1, val)) /* seto */
+                newval |= EFLAGS_OF;
+            info->mcontext->xflags = newval;
+
             reg_set_value(DR_REG_XAX, info->mcontext,
                     dr_read_saved_reg(drcontext, SPILL_SLOT_5));
             reg_set_value(DR_REG_XCX, info->mcontext,
@@ -766,8 +783,8 @@ static void drbbdup_thread_exit(void *drcontext) {
 static void drbbdup_destroy_manager(void *manager_opaque) {
 
     drbbdup_manager_t *manager = (drbbdup_manager_t *) manager_opaque;
-
     drbbdup_case_t *case_info = &(manager->default_case);
+
     DR_ASSERT(manager->default_case.is_defined);
 
     if (opts.destroy_case_user_data && case_info->user_data) {
@@ -807,7 +824,7 @@ drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in) {
     faulty_page = dr_nonheap_alloc(dr_page_size(), DR_MEMPROT_NONE);
 
     drreg_options_t drreg_ops;
-    drreg_ops.num_spill_slots = 2; // one for comparator and another for aflags.
+    drreg_ops.num_spill_slots = 5; // one for comparator and another for aflags.
     drreg_ops.conservative = true;
     drreg_ops.do_not_sum_slots = true;
     drreg_ops.struct_size = sizeof(drreg_options_t);
