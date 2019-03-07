@@ -71,6 +71,10 @@ typedef struct {
     drbbdup_case_t default_case;
     drbbdup_case_t cases[NUMBER_OF_DUPS];
     void *user_data;
+
+    reg_id_t comparator_reg;
+    bool spill_eflag_dead;
+    bool comparator_reg_dead;
 } drbbdup_manager_t;
 
 /**

@@ -418,11 +418,16 @@ static void drbbdup_insert_jmp_to_exit(void *drcontext, instrlist_t *bb,
 }
 
 static void drbbdup_insert_landing_restoration(void *drcontext, instrlist_t *bb,
-        instr_t *where) {
+        instr_t *where, drbbdup_manager_t *manager) {
 
-    dr_restore_arith_flags_from_xax(drcontext, bb, where);
-    dr_restore_reg(drcontext, bb, where, DR_REG_XAX, SPILL_SLOT_5);
-    dr_restore_reg(drcontext, bb, where, DR_REG_XCX, SPILL_SLOT_6);
+    if (!manager->spill_eflag_dead) {
+        dr_restore_arith_flags_from_xax(drcontext, bb, where);
+        dr_restore_reg(drcontext, bb, where, DR_REG_XAX, SPILL_SLOT_5);
+    }
+
+    if (!manager->comparator_reg_dead) {
+        dr_restore_reg(drcontext, bb, where, manager->comparator_reg, SPILL_SLOT_6);
+    }
 }
 
 static void drbbdup_set_case_labels(void *drcontext, instrlist_t *bb,
@@ -479,9 +484,23 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation,
     drreg_restore_all_now(drcontext, bb, where);
 
     /* Spill register  */
-    dr_save_reg(drcontext, bb, where, DR_REG_XAX, SPILL_SLOT_5);
-    dr_save_arith_flags_to_xax(drcontext, bb, where);
-    dr_save_reg(drcontext, bb, where, DR_REG_XCX, SPILL_SLOT_6);
+    if (drreg_are_aflags_dead(drcontext, where, &(manager->spill_eflag_dead))
+            != DRREG_SUCCESS)
+        DR_ASSERT(false);
+
+    if (!manager->spill_eflag_dead) {
+        dr_save_reg(drcontext, bb, where, DR_REG_XAX, SPILL_SLOT_5);
+        dr_save_arith_flags_to_xax(drcontext, bb, where);
+    }
+
+    if (drreg_is_register_dead(drcontext, DR_REG_XCX, where,
+            &(manager->comparator_reg_dead)) != DRREG_SUCCESS)
+        DR_ASSERT(false);
+
+    if (!manager->comparator_reg_dead) {
+        manager->comparator_reg = DR_REG_XCX;
+        dr_save_reg(drcontext, bb, where, DR_REG_XCX, SPILL_SLOT_6);
+    }
 
     /* Load comparator */
     opnd_t store_opnd = drbbdup_get_comparator_opnd();
@@ -587,8 +606,8 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 
         /* Insert jumps. */
         drbbdup_insert_jumps(drcontext, pc, bb, instr, manager);
-        drbbdup_insert_landing_restoration(drcontext, bb,
-                instr_get_next(instr));
+        drbbdup_insert_landing_restoration(drcontext, bb, instr_get_next(instr),
+                manager);
 
         // Set the case to 0.
         DR_ASSERT(pt->case_index == 0 || pt->case_index == -1);
@@ -630,7 +649,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 
             /* Restore upon entry of considered block */
             drbbdup_insert_landing_restoration(drcontext, bb,
-                    instr_get_next(instr));
+                    instr_get_next(instr), manager);
 
         } else if (result && label_info == DRBBDUP_LABEL_EXIT) {
             DR_ASSERT(pt->case_index >= 0);
@@ -734,23 +753,30 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
             bool succ = dr_flush_region(info->mcontext->pc, 1);
             DR_ASSERT(succ);
 
-            // Eflag restoration is taken from drreg. Should move it upon release.
-            reg_t newval = info->mcontext->xflags;
-            reg_t val;
-            uint sahf;
+            if (!manager->spill_eflag_dead) {
 
-            val = info->mcontext->xax;
-            sahf = (val & 0xff00) >> 8;
-            newval &= ~(EFLAGS_ARITH);
-            newval |= sahf;
-            if (TEST(1, val)) /* seto */
-                newval |= EFLAGS_OF;
-            info->mcontext->xflags = newval;
+                // Eflag restoration is taken from drreg. Should move it upon release.
+                reg_t newval = info->mcontext->xflags;
+                reg_t val;
+                uint sahf;
 
-            reg_set_value(DR_REG_XAX, info->mcontext,
-                    dr_read_saved_reg(drcontext, SPILL_SLOT_5));
-            reg_set_value(DR_REG_XCX, info->mcontext,
-                    dr_read_saved_reg(drcontext, SPILL_SLOT_6));
+                val = info->mcontext->xax;
+                sahf = (val & 0xff00) >> 8;
+                newval &= ~(EFLAGS_ARITH);
+                newval |= sahf;
+                if (TEST(1, val)) /* seto */
+                    newval |= EFLAGS_OF;
+                info->mcontext->xflags = newval;
+
+                reg_set_value(DR_REG_XAX, info->mcontext,
+                        dr_read_saved_reg(drcontext, SPILL_SLOT_5));
+            }
+
+            if (!manager->comparator_reg_dead) {
+
+                reg_set_value(manager->comparator_reg, info->mcontext,
+                        dr_read_saved_reg(drcontext, SPILL_SLOT_6));
+            }
 
             return DR_SIGNAL_REDIRECT;
         }
