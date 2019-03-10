@@ -88,6 +88,7 @@ opnd_t drbbdup_get_comparator_opnd() {
  * This phase is responsible for performing the actual duplications of the bb.
  *
  * The original code placed by DR is considered as the default case.
+ *
  */
 
 /* Returns the number of bb versions.*/
@@ -133,7 +134,11 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         return DR_EMIT_DEFAULT;
     }
 
-    /* If the bb is less than the required size, bb duplication is skipped.
+    /**
+     * If the bb is less than the required size, bb duplication is skipped.
+     *
+     * The intuition here is that small bbs might as well have propagation attempted
+     * instead of generating fast paths.
      */
     size_t cur_size = 0;
     for (first = instrlist_first_app(bb); first != NULL; first =
@@ -141,6 +146,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         cur_size++;
 
     if (cur_size < opts.required_size) {
+        /** Too small. **/
         return DR_EMIT_DEFAULT;
     }
 
@@ -151,6 +157,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     hashtable_lock(&case_manager_table);
     drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
             &case_manager_table, pc);
+
     if (manager == NULL) {
         /* If manager is not available, we need to create a default one */
 
@@ -164,6 +171,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
         hashtable_add(&case_manager_table, pc, manager);
     }
+
     hashtable_unlock(&case_manager_table);
     DR_ASSERT(manager != NULL);
 
@@ -184,12 +192,13 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
      *   LABEL 1
      *   mov ebx ecx
      *   mov esi eax
+     *   jmp EXIT LABEL
      *
      *   LABEL 2
      *   mov ebx ecx
      *   mov esi eax
-     *
-     *   EXIT Label
+     *   jmp EXIT LABEL
+     *   EXIT LABEL
      *   ret
      *
      * We will leave the linking for the instrumentation stage.
@@ -199,20 +208,31 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     instrlist_t *original = instrlist_clone(drcontext, bb);
 
     instr_t *last = instrlist_last_app(original);
-    /* If the last instruction is a sytem call/cti, we remove it from the original.*/
+    /**
+     * If the last instruction is a sytem call/cti, we remove it from the original.
+     * This is done so we do not duplicate these instructions.
+     */
     if (instr_is_syscall(last) || instr_is_cti(last) || instr_is_ubr(last)) {
         instrlist_remove(original, last);
         instr_destroy(drcontext, last);
     }
+
+    // Create exit label
+    instr_t *exit_label = INSTR_CREATE_label(drcontext);
+    opnd_t exit_label_opnd = opnd_create_instr(exit_label);
+    instr_set_note(exit_label, (void*) (intptr_t) DRBBDUP_LABEL_EXIT);
 
     /* Add the label of the first bb code that is already in place. */
     instr_t * label = INSTR_CREATE_label(drcontext);
     instr_set_note(label, (void *) (intptr_t) DRBBDUP_LABEL_NORMAL);
     instrlist_meta_preinsert(bb, instrlist_first(bb), label);
 
-    /* Now add dups for the cases */
+    /* Now add dups for the cases. Start with i = 1, because of the pre-existing code. */
     int i;
     for (i = 1; i < count; i++) {
+
+        instr_t *jmp_exit = INSTR_CREATE_jmp(drcontext, exit_label_opnd);
+        instrlist_preinsert(bb, instrlist_first(bb), jmp_exit);
 
         drbbdup_add_dup(drcontext, bb, original);
 
@@ -221,25 +241,22 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         instrlist_meta_preinsert(bb, instrlist_first(bb), label);
     }
 
-    /* Delete original */
+    /* Delete original. */
     instrlist_clear_and_destroy(drcontext, original);
 
     /* Add the exit label */
     last = instrlist_last(bb);
-    label = INSTR_CREATE_label(drcontext);
-    instr_set_note(label, (void*) (intptr_t) DRBBDUP_LABEL_EXIT);
-
     /* If there is a syscall, place the exit label prior. */
     if (instr_is_syscall(last) || instr_is_cti(last) || instr_is_ubr(last)) {
-        instrlist_meta_preinsert(bb, instrlist_last(bb), label);
+        instrlist_meta_preinsert(bb, instrlist_last(bb), exit_label);
     } else {
-
-        /* Restoration at the end of the block is not done automatically by drreg
-         * but by drbbdup!
+        /**
+         * Restoration at the end of the block is not done automatically
+         * by drreg but by drbbdup!
          */
         drreg_set_bb_properties(drcontext, DRREG_IGNORE_BB_END_RESTORE);
 
-        instrlist_meta_postinsert(bb, instrlist_last(bb), label);
+        instrlist_meta_postinsert(bb, instrlist_last(bb), exit_label);
     }
 
     return DR_EMIT_DEFAULT;
@@ -297,27 +314,10 @@ static instr_t *drbbdup_forward_next(void *drcontext, instrlist_t *bb,
     return start;
 }
 
-static instr_t *drbbdup_find_exit_label(void *drcontext, instrlist_t *bb,
-        instr_t *start) {
-
-    void *label_info = instr_get_note(start);
-
-    while (label_info != (void *) DRBBDUP_LABEL_EXIT) {
-
-        /* If we encounter a normal label, skip to next. */
-        if (label_info == (void *) DRBBDUP_LABEL_NORMAL)
-            start = instr_get_next(start);
-
-        start = drbbdup_forward_next(drcontext, bb, start);
-        label_info = instr_get_note(start);
-    }
-
-    DR_ASSERT(start);
-    return start;
-}
-
 static instrlist_t *drbbdup_derive_case_bb(void *drcontext, instrlist_t *bb,
         instr_t **start) {
+
+    // Extracts the duplicated code for the case
 
     instrlist_t *case_bb = instrlist_create(drcontext);
     instrlist_init(case_bb);
@@ -329,7 +329,6 @@ static instrlist_t *drbbdup_derive_case_bb(void *drcontext, instrlist_t *bb,
         instrlist_append(case_bb, instr_cpy);
 
         instr = instr_get_next(instr);
-
     }
 
     *start = instr;
@@ -354,6 +353,7 @@ static void drbbdup_analyse_bbs(void *drcontext, instrlist_t *bb, instr_t *strt,
 
         strt = instr_get_next(strt);
 
+        /** Extract the code of the case **/
         instrlist_t *case_bb = drbbdup_derive_case_bb(drcontext, bb, &strt);
         opts.analyse_bb(drcontext, case_bb, manager, case_info, opts.user_data);
         instrlist_clear_and_destroy(drcontext, case_bb);
@@ -408,15 +408,6 @@ static dr_emit_flags_t drbbdup_analyse_phase(void *drcontext, void *tag,
  * based on the case being handled.
  */
 
-/* Inserts a jump instruction to the ext label */
-static void drbbdup_insert_jmp_to_exit(void *drcontext, instrlist_t *bb,
-        instr_t *where, instr_t *exit_label) {
-
-    opnd_t label_opnd = opnd_create_instr(exit_label);
-    instr_t *jmp_instr = INSTR_CREATE_jmp(drcontext, label_opnd);
-    instrlist_meta_preinsert(bb, where, jmp_instr);
-}
-
 static void drbbdup_insert_landing_restoration(void *drcontext, instrlist_t *bb,
         instr_t *where, drbbdup_manager_t *manager) {
 
@@ -426,7 +417,8 @@ static void drbbdup_insert_landing_restoration(void *drcontext, instrlist_t *bb,
     }
 
     if (!manager->comparator_reg_dead) {
-        dr_restore_reg(drcontext, bb, where, manager->comparator_reg, SPILL_SLOT_6);
+        dr_restore_reg(drcontext, bb, where, manager->comparator_reg,
+                SPILL_SLOT_6);
     }
 }
 
@@ -639,14 +631,6 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
             pt->case_index = i;
             DR_ASSERT(found);
 
-            drreg_restore_all_now(drcontext, bb, instr);
-
-            /* Add jmp to exit label prior to the normal label being considered.
-             * This is done so the previous bb can correctly exit.
-             */
-            instr_t *exit_label = drbbdup_find_exit_label(drcontext, bb, instr);
-            drbbdup_insert_jmp_to_exit(drcontext, bb, instr, exit_label);
-
             /* Restore upon entry of considered block */
             drbbdup_insert_landing_restoration(drcontext, bb,
                     instr_get_next(instr), manager);
@@ -658,6 +642,17 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
             drreg_restore_all_now(drcontext, bb, instr);
 
         } else {
+
+            if (instr_is_cti(instr) && instr_get_next(instr) != NULL) {
+
+                result = drbbdup_is_at_end_ex(drcontext, instr_get_next(instr), &label_info);
+
+                if (result && label_info == DRBBDUP_LABEL_NORMAL) {
+
+                    drreg_restore_all_now(drcontext, bb, instr_get_prev(instr));
+                }
+            }
+
             if (pt->case_index == -1) {
                 drbbdup_case = NULL;
             } else {
@@ -851,7 +846,7 @@ drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in) {
 
     drreg_options_t drreg_ops;
     drreg_ops.num_spill_slots = 5; // one for comparator and another for aflags.
-    drreg_ops.conservative = true;
+    drreg_ops.conservative = false;
     drreg_ops.do_not_sum_slots = true;
     drreg_ops.struct_size = sizeof(drreg_options_t);
     drreg_ops.error_callback = NULL;
