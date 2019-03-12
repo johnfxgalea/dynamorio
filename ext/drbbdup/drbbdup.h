@@ -71,16 +71,13 @@ typedef struct {
     drbbdup_case_t default_case;
     drbbdup_case_t cases[NUMBER_OF_DUPS];
     void *user_data;
-
-    reg_id_t comparator_reg;
     bool spill_eflag_dead;
-    bool comparator_reg_dead;
 } drbbdup_manager_t;
 
 /**
  * TODO
  */
-typedef void (*drbbdup_create_default_manager_t)(void *drcontext,
+typedef bool (*drbbdup_create_default_manager_t)(void *drcontext,
         instrlist_t *bb, drbbdup_manager_t *manager, void *user_data);
 
 /**
@@ -106,7 +103,7 @@ typedef void (*drbbdup_get_comparator_t)(void *drcontext, instrlist_t *bb,
 /**
  * TODO
  */
-DR_EXPORT void* drbbdup_get_comparator(void *comparator_val);
+DR_EXPORT void* drbbdup_get_comparator();
 
 /**
  * TODO
