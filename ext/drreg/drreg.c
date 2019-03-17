@@ -342,7 +342,7 @@ get_xmm_spilled_value(void *drcontext, uint slot, OUT byte *value_buf, size_t bu
         return false;
 
     per_thread_t *pt = get_tls_data(drcontext);
-    memcpy(value_buf, pt->xmm_reg + (slot * REG_XMM_SIZE), REG_XMM_SIZE);
+    memcpy(value_buf, pt->xmm_spills + (slot * REG_XMM_SIZE), REG_XMM_SIZE);
     return true;
 }
 

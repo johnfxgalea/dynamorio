@@ -617,10 +617,6 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation,
 
             /* No need to add fault again. */
             include_faulty = true;
-
-#ifdef ENABLE_STATS
-            drbbdup_stat_inc_limit_reached();
-#endif
         }
     }
 
@@ -654,6 +650,8 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation,
     }
 #ifdef ENABLE_STATS
     else {
+
+        drbbdup_stat_inc_limit_reached();
         drbbdup_stat_clean_bail_entry(drcontext, bb, where);
     }
 #endif
