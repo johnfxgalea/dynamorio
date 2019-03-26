@@ -12,7 +12,7 @@
 #include "drmgr.h"
 
 // Comment out macro for no stats
-#define ENABLE_STATS 1
+//#define ENABLE_STATS 1
 
 void drbbdup_stat_inc_bb();
 
