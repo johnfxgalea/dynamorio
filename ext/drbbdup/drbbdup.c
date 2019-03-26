@@ -693,7 +693,8 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
         pt->case_index = 0;
 
 #ifdef ENABLE_STATS
-        drbbdup_stat_clean_case_entry(drcontext, bb, instr_get_next(instr), pt->case_index);
+        drbbdup_stat_clean_case_entry(drcontext, bb, instr_get_next(instr),
+                pt->case_index);
 #endif
 
     } else {
@@ -729,7 +730,8 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
                     instr_get_next(instr), manager);
 
 #ifdef ENABLE_STATS
-            drbbdup_stat_clean_case_entry(drcontext, bb, instr_get_next(instr), pt->case_index);
+            drbbdup_stat_clean_case_entry(drcontext, bb, instr_get_next(instr),
+                    pt->case_index);
 #endif
 
         } else if (result && label_info == DRBBDUP_LABEL_EXIT) {
@@ -754,11 +756,10 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
                 drbbdup_case = NULL;
             } else {
 
-                if (pt->case_index == 0)
-                {
+                if (pt->case_index == 0) {
                     /* If zero, use default */
                     drbbdup_case = &(manager->default_case);
-                }else{
+                } else {
                     /* Otherwise use special case */
 
                     /* We perform -1 on index to take into account default case. */
@@ -929,7 +930,8 @@ static void drbbdup_destroy_manager(void *manager_opaque) {
     dr_global_free(manager, sizeof(drbbdup_manager_t));
 }
 
-drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in) {
+drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in,
+        drmgr_priority_t *bb_instrum_priority) {
 
     DR_ASSERT(ops_in);
     memcpy(&opts, ops_in, sizeof(drbbdup_options_t));
@@ -951,17 +953,13 @@ drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in) {
     drreg_ops.struct_size = sizeof(drreg_options_t);
     drreg_ops.error_callback = NULL;
 
-    drmgr_priority_t priority = { sizeof(drmgr_priority_t),
-    DRMGR_PRIORITY_NAME_DRBBDUP,
-    NULL, NULL, DRMGR_PRIORITY_DRBBDUP };
-
     drmgr_priority_t fault_priority = { sizeof(fault_priority),
     DRMGR_PRIORITY_NAME_FAULT_DRBBDUP,
     NULL, NULL, DRMGR_PRIORITY_FAULT_DRBBDUP };
 
     if (!drmgr_register_bb_instrumentation_ex_event(drbbdup_duplicate_phase,
-            drbbdup_analyse_phase, drbbdup_link_phase, NULL, &priority)
-            || drreg_init(&drreg_ops) != DRREG_SUCCESS
+            drbbdup_analyse_phase, drbbdup_link_phase, NULL,
+            bb_instrum_priority) || drreg_init(&drreg_ops) != DRREG_SUCCESS
             || !drmgr_register_signal_event_ex(drbbdup_event_signal,
                     &fault_priority))
         DR_ASSERT(false);

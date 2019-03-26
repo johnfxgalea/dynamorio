@@ -136,7 +136,7 @@ typedef struct {
 /**
  * TODO
  */
-DR_EXPORT drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in);
+DR_EXPORT drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in, drmgr_priority_t *bb_instrum_priority);
 
 /**
  * TODO

@@ -107,7 +107,11 @@ void drbbdup_stat_print_stats() {
     dr_fprintf(STDERR, "Total Skipped: %lu\n", non_applicable);
     dr_fprintf(STDERR, "Number of BB instrumented: %lu\n", bb_instrumented);
     dr_fprintf(STDERR, "Limit Reached: %lu\n", limit_reached);
-    dr_fprintf(STDERR, "Avg BB size: %lu\n\n", total_size / bb_instrumented);
+
+    if (bb_instrumented != 0)
+        dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
+                total_size / bb_instrumented);
+
     dr_fprintf(STDERR, "Number of faults: %lu\n", gen_num);
     dr_fprintf(STDERR, "Total bb exec: %lu\n", total_exec);
     dr_fprintf(STDERR, "Total bails: %lu\n", total_bails);
