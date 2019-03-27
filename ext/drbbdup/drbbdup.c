@@ -169,7 +169,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-        drbbdup_stat_inc_bb();
+    drbbdup_stat_inc_bb();
 #endif
 
     /* If the first instruction is a branch statement, we simply return.
@@ -180,7 +180,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
         if (!translating)
-            drbbdup_stat_inc_non_applicable();
+        drbbdup_stat_inc_non_applicable();
 #endif
 
         return DR_EMIT_DEFAULT;
@@ -201,7 +201,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
         if (!translating)
-            drbbdup_stat_inc_non_applicable();
+        drbbdup_stat_inc_non_applicable();
 #endif
 
         /** Too small. **/
@@ -210,7 +210,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-        drbbdup_stat_inc_bb_size(cur_size);
+    drbbdup_stat_inc_bb_size(cur_size);
 #endif
 
     /* Use the PC of the fragment as the key! */
@@ -238,7 +238,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
             if (!translating)
-                drbbdup_stat_inc_non_applicable();
+            drbbdup_stat_inc_non_applicable();
 #endif
             dr_global_free(manager, sizeof(drbbdup_manager_t));
             hashtable_unlock(&case_manager_table);
@@ -283,7 +283,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-        drbbdup_stat_inc_instrum_bb();
+    drbbdup_stat_inc_instrum_bb();
 #endif
 
     /* We create a duplication here to keep track of original bb */
@@ -767,8 +767,9 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
                 }
             }
 
-            opts.instrument_bb(drcontext, bb, instr, manager, drbbdup_case,
-                    opts.user_data);
+            if (instr_is_app(instr))
+                opts.instrument_bb(drcontext, bb, instr, manager, drbbdup_case,
+                        opts.user_data);
         }
     }
 
