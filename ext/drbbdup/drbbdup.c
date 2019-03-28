@@ -811,7 +811,10 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
                     &case_manager_table, bb_pc);
             hashtable_unlock(&case_manager_table);
 
-            DR_ASSERT(manager);
+            if (!manager) {
+                dr_fprintf(STDERR, "I cant find the manager %p\n", bb_pc);
+                DR_ASSERT_MSG(false, "Cant find manager!\n");
+            }
 
             /*
              * Get the conditional value that failed.
