@@ -72,6 +72,8 @@ typedef struct {
     drbbdup_case_t cases[NUMBER_OF_DUPS];
     void *user_data;
     bool spill_eflag_dead;
+    bool apply_default;
+
 } drbbdup_manager_t;
 
 /**
