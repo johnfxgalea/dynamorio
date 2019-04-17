@@ -218,7 +218,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     drbbdup_stat_inc_bb_size(cur_size);
 #endif
 
-
     /* Example:
      *
      * Lets say the bb is in this form:
@@ -306,6 +305,9 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     if (!translating)
     drbbdup_stat_inc_instrum_bb();
 #endif
+
+
+    drreg_set_bb_properties(drcontext, DRREG_IGNORE_CONTROL_FLOW);
 
 
     /* Create exit label */
@@ -431,8 +433,11 @@ static instrlist_t *drbbdup_derive_case_bb(void *drcontext, instrlist_t *bb,
     instr_t *instr = *start;
     while (!drbbdup_is_at_end(drcontext, instr)) {
 
-        instr_t *instr_cpy = instr_clone(drcontext, instr);
-        instrlist_append(case_bb, instr_cpy);
+        if (!(instr_is_cti(instr)
+                && drbbdup_is_at_end(drcontext, instr_get_next(instr)))) {
+            instr_t *instr_cpy = instr_clone(drcontext, instr);
+            instrlist_append(case_bb, instr_cpy);
+        }
 
         instr = instr_get_next(instr);
     }
@@ -795,6 +800,9 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
                 /* Include restoration before jmp instr */
                 if (result && label_info == DRBBDUP_LABEL_NORMAL) {
                     drreg_restore_all_now(drcontext, bb, instr_get_prev(instr));
+
+                    /*Don't bother instrumenting jmp exists of fast paths */
+                    return DR_EMIT_DEFAULT;
                 }
             }
 
@@ -888,12 +896,8 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
                         break;
                     }
                 }
-                /**
-                 * There should be a free space!
-                 * Otherwise the faulty instr wouldn't have been placed
-                 */
-                DR_ASSERT(found);
             }
+
             /* This is an important step.
              *
              * In order to handle the new case, we need to flush out the bb
