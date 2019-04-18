@@ -21,7 +21,14 @@
 
 #define HASH_BIT_TABLE 8
 
-/*  Label types.
+/**
+ * Instance count of drbbdup
+ */
+
+uint drreg_ref_count = 0;
+
+/**
+ * Label types.
  */
 typedef enum {
     /* The last label denoting the end of duplicated blocks */
@@ -30,8 +37,13 @@ typedef enum {
     DRBBDUP_LABEL_NORMAL = 78,
 } drbbdup_label_t;
 
+/*
+ * Info related to thread local storage
+ */
 static reg_id_t tls_raw_reg;
 static uint tls_raw_base;
+
+static int tls_idx = -1;
 
 /**
  * A  case map that associated PCs of fragments with case managers.
@@ -43,7 +55,8 @@ static uint tls_raw_base;
  */
 static hashtable_t case_manager_table;
 
-/* When a case is not defined and there is an available slot for duplication,
+/**
+ * When a case is not defined and there is an available slot for duplication,
  * drbbdup reads from a faulty page. This leads to a fault, which is handled
  * by drbbdup to define the new case. The bb is flushed, and a new one is created so
  * that the handler of the new case is inserted.
@@ -52,8 +65,6 @@ static void *faulty_page = NULL;
 
 /** Global options of drbbdup. **/
 static drbbdup_options_t opts;
-
-static int tls_idx = -1;
 
 typedef struct {
     int case_index;
@@ -126,7 +137,7 @@ static reg_t drbbdup_get_spilled(int slot_idx) {
 /************************************************************************
  * DUPlICATION PHASE
  *
- * This phase is responsible for performing the actual duplications of the bb.
+ * This phase is responsible for performing the actual duplications of bbs.
  */
 
 /* Returns the number of bb versions.*/
@@ -243,7 +254,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
      * We will leave the linking for the instrumentation stage.
      *
      * We can add jmp instructions here and DR will set them to meta for us.
-     * Developers needed to do this for unrolling rep.
+     * DR Developers needed to do this for unrolling rep.
      */
 
     /* We create a duplication here to keep track of original bb */
@@ -260,7 +271,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         instr_destroy(drcontext, last);
     }
 
-    /* Use the PC of the fragment as the key! */
+    /* Use the PC of the fragment as the key */
     app_pc pc = dr_fragment_app_pc(tag);
 
     /* Fetch new case manager */
@@ -306,9 +317,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     drbbdup_stat_inc_instrum_bb();
 #endif
 
-
     drreg_set_bb_properties(drcontext, DRREG_IGNORE_CONTROL_FLOW);
-
 
     /* Create exit label */
     instr_t *exit_label = INSTR_CREATE_label(drcontext);
@@ -395,7 +404,7 @@ static bool drbbdup_is_at_end_ex(void *drcontext, instr_t *check_instr,
         return true;
     }
 
-    /* This is another meta label used for other purposes. */
+    /* This is another meta-label used for other purposes. */
     return false;
 }
 
@@ -428,11 +437,11 @@ static instrlist_t *drbbdup_derive_case_bb(void *drcontext, instrlist_t *bb,
 
     /* Extracts the duplicated code for the case */
     instrlist_t *case_bb = instrlist_create(drcontext);
-    instrlist_init(case_bb);
 
     instr_t *instr = *start;
     while (!drbbdup_is_at_end(drcontext, instr)) {
 
+        /* We avoid including jumps that exit the fast path for analysis */
         if (!(instr_is_cti(instr)
                 && drbbdup_is_at_end(drcontext, instr_get_next(instr)))) {
             instr_t *instr_cpy = instr_clone(drcontext, instr);
@@ -446,6 +455,26 @@ static instrlist_t *drbbdup_derive_case_bb(void *drcontext, instrlist_t *bb,
     return case_bb;
 }
 
+static void drbbdup_hanlde_pre_analysis(void *drcontext, instrlist_t *bb,
+        instr_t *strt, drbbdup_manager_t *manager) {
+
+    /**
+     * Trigger pre analysis event.
+     * This useful for user to set up things before analysis
+     */
+    if (!opts.pre_analyse_bb)
+        return;
+
+    DR_ASSERT(instr_get_note(strt) == (void * ) DRBBDUP_LABEL_NORMAL);
+    strt = instr_get_next(strt);
+
+    instrlist_t *case_bb = drbbdup_derive_case_bb(drcontext, bb, &strt);
+    /** Let the user analyse the BB and set case info **/
+    opts.pre_analyse_bb(drcontext, case_bb, manager, opts.user_data);
+
+    instrlist_clear_and_destroy(drcontext, case_bb);
+}
+
 static void drbbdup_analyse_one_bb(void *drcontext, instrlist_t *bb,
         instr_t *strt, drbbdup_manager_t *manager, drbbdup_case_t * case_info) {
 
@@ -454,7 +483,10 @@ static void drbbdup_analyse_one_bb(void *drcontext, instrlist_t *bb,
     DR_ASSERT(instr_get_note(strt) == (void * ) DRBBDUP_LABEL_NORMAL);
     strt = instr_get_next(strt);
 
-    /** Extract the code of the case **/
+    /**
+     * Extract the code of the case.
+     * Create separate lists to make it simple for the user
+     **/
     instrlist_t *case_bb = drbbdup_derive_case_bb(drcontext, bb, &strt);
     /** Let the user analyse the BB and set case info **/
     opts.analyse_bb(drcontext, case_bb, manager, case_info, opts.user_data);
@@ -473,6 +505,8 @@ static void drbbdup_analyse_bbs(void *drcontext, instrlist_t *bb, instr_t *strt,
     DR_ASSERT(case_info);
     DR_ASSERT(case_info->is_defined);
 
+    drbbdup_hanlde_pre_analysis(drcontext, bb, strt, manager);
+
     if (drbbdup_consider_default(manager))
         drbbdup_analyse_one_bb(drcontext, bb, strt, manager, case_info);
 
@@ -480,9 +514,7 @@ static void drbbdup_analyse_bbs(void *drcontext, instrlist_t *bb, instr_t *strt,
     for (int i = 0; i < NUMBER_OF_DUPS; i++) {
 
         case_info = &(manager->cases[i]);
-
         if (case_info->is_defined) {
-
             drbbdup_analyse_one_bb(drcontext, bb, strt, manager, case_info);
         }
     }
@@ -532,6 +564,7 @@ static void drbbdup_set_case_labels(void *drcontext, instrlist_t *bb,
 
     drbbdup_case_t * case_info;
 
+    /* Instrument default (if we need to consider it) */
     if (drbbdup_consider_default(manager)) {
         // Instrument default
         case_info = &(manager->default_case);
@@ -614,6 +647,7 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation,
     bool include_faulty = false;
     opnd_t label_opnd;
     opnd_t opnd;
+    opnd_t opnd2;
     instr_t* label;
 
     drbbdup_case_t *case_info = NULL;
@@ -680,7 +714,8 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation,
         }
 
         opnd = opnd_create_abs_addr(faulty_page, OPSZ_4);
-        instr = INSTR_CREATE_inc(drcontext, opnd);
+        opnd2 = opnd_create_immed_uint(1, OPSZ_4);
+        instr = INSTR_CREATE_mov_st(drcontext, opnd, opnd2);
         instr_set_translation(instr, translation);
         instrlist_meta_preinsert(bb, where, instr);
     }
@@ -753,7 +788,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 
         if (result && label_info == DRBBDUP_LABEL_NORMAL) {
 
-            /* We have reached the start of a new case! */
+            /* We have reached the start of a new case */
             bool found = false;
             int i;
             for (i = pt->case_index + 1; i < (NUMBER_OF_DUPS + 1); i++) {
@@ -801,7 +836,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
                 if (result && label_info == DRBBDUP_LABEL_NORMAL) {
                     drreg_restore_all_now(drcontext, bb, instr_get_prev(instr));
 
-                    /*Don't bother instrumenting jmp exists of fast paths */
+                    /* Don't bother instrumenting jmp exists of fast paths */
                     return DR_EMIT_DEFAULT;
                 }
             }
@@ -836,7 +871,8 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 
 static bool drbbdup_accessed_faulty_page(byte *target) {
 
-    /* Checks that the access target referred to the faulty page.
+    /**
+     * Checks that the access target referred to the faulty page.
      * Otherwise, the fault does not concern drbbdup.
      */
     return faulty_page == (void *) target;
@@ -860,20 +896,19 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
              */
             app_pc bb_pc = info->mcontext->pc;
 
+            /* Get the missing case */
+            reg_t conditional_val = (reg_t) (intptr_t) drbbdup_get_comparator();
+
             /* Look up case manager */
             hashtable_lock(&case_manager_table);
+
             drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
                     &case_manager_table, bb_pc);
-            hashtable_unlock(&case_manager_table);
 
             if (!manager)
                 DR_ASSERT_MSG(false, "Cant find manager!\n");
 
-            /* Get the missing case */
-            reg_t conditional_val = (reg_t) (intptr_t) drbbdup_get_comparator();
-
             /* Find an undefined case, and set it up for the new conditional. */
-            bool found = false;
 
             /* Check whether the default case is actually the missing case. */
             if (manager->default_case.condition_val
@@ -888,8 +923,6 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
                     if (!(manager->cases[i].is_defined)) {
 
                         manager->cases[i].is_defined = true;
-                        found = true;
-
                         manager->cases[i].condition_val =
                                 (unsigned int) (uintptr_t) conditional_val;
 
@@ -898,7 +931,10 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
                 }
             }
 
-            /* This is an important step.
+            hashtable_unlock(&case_manager_table);
+
+            /**
+             * This is an important step.
              *
              * In order to handle the new case, we need to flush out the bb
              * in DR's cache. We then redirect execution to app code, which will
@@ -956,111 +992,95 @@ static void drbbdup_thread_exit(void *drcontext) {
     dr_thread_free(drcontext, pt, sizeof(*pt));
 }
 
-static void drbbdup_destroy_case(drbbdup_case_t *case_info) {
-
-    if (case_info->is_defined) {
-        if (opts.destroy_case_user_data && case_info->user_data) {
-            opts.destroy_case_user_data(case_info->user_data);
-        }
-    }
-
-}
-
 static void drbbdup_destroy_manager(void *manager_opaque) {
 
     drbbdup_manager_t *manager = (drbbdup_manager_t *) manager_opaque;
-
-    /** Destroy cases  **/
-    drbbdup_destroy_case(&(manager->default_case));
-
-    for (int i = 0; i < NUMBER_OF_DUPS; i++)
-        drbbdup_destroy_case(&(manager->cases[i]));
-
-    if (opts.destroy_manager_user_data && manager->user_data)
-        opts.destroy_manager_user_data(manager->user_data);
-
     dr_global_free(manager, sizeof(drbbdup_manager_t));
 }
 
 drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in,
         drmgr_priority_t *bb_instrum_priority) {
 
-    DR_ASSERT(ops_in);
-    memcpy(&opts, ops_in, sizeof(drbbdup_options_t));
+    if (drreg_ref_count == 0) {
+        DR_ASSERT(ops_in);
+        memcpy(&opts, ops_in, sizeof(drbbdup_options_t));
 
-    /* Perform checks */
-    DR_ASSERT(opts.create_manager);
-    DR_ASSERT(opts.instrument_bb);
-    DR_ASSERT(opts.get_comparator);
-    DR_ASSERT(opts.analyse_bb);
+        /* Perform checks */
+        DR_ASSERT(opts.create_manager);
+        DR_ASSERT(opts.instrument_bb);
+        DR_ASSERT(opts.get_comparator);
+        DR_ASSERT(opts.analyse_bb);
 
-    /**
-     * We initialise the hash table that keeps track of defined cases per
-     * basic block.
-     */
-    hashtable_init_ex(&case_manager_table, HASH_BIT_TABLE, HASH_INTPTR,
-    false, false, drbbdup_destroy_manager, NULL, NULL);
+        /**
+         * We initialise the hash table that keeps track of defined cases per
+         * basic block.
+         */
+        hashtable_init_ex(&case_manager_table, HASH_BIT_TABLE, HASH_INTPTR,
+        false, false, drbbdup_destroy_manager, NULL, NULL);
 
-    /* Init the faulty page. We access this page when generating fast paths */
-    faulty_page = dr_nonheap_alloc(dr_page_size(), DR_MEMPROT_NONE);
+        /* Init the faulty page. We access this page when generating fast paths */
+        faulty_page = dr_nonheap_alloc(dr_page_size(), DR_MEMPROT_NONE);
 
-    drreg_options_t drreg_ops;
-    drreg_ops.num_spill_slots = 5;
-    drreg_ops.conservative = false;
-    drreg_ops.do_not_sum_slots = true;
-    drreg_ops.struct_size = sizeof(drreg_options_t);
-    drreg_ops.error_callback = NULL;
+        drreg_options_t drreg_ops = { sizeof(drreg_ops), 5, false, NULL, true };
 
-    drmgr_priority_t fault_priority = { sizeof(fault_priority),
-    DRMGR_PRIORITY_NAME_FAULT_DRBBDUP,
-    NULL, NULL, DRMGR_PRIORITY_FAULT_DRBBDUP };
+        drmgr_priority_t fault_priority = { sizeof(fault_priority),
+        DRMGR_PRIORITY_NAME_FAULT_DRBBDUP,
+        NULL, NULL, DRMGR_PRIORITY_FAULT_DRBBDUP };
 
-    if (!drmgr_register_bb_instrumentation_ex_event(drbbdup_duplicate_phase,
-            drbbdup_analyse_phase, drbbdup_link_phase, NULL,
-            bb_instrum_priority) || drreg_init(&drreg_ops) != DRREG_SUCCESS
-            || !drmgr_register_signal_event_ex(drbbdup_event_signal,
-                    &fault_priority))
-        DR_ASSERT(false);
+        if (!drmgr_register_bb_instrumentation_ex_event(drbbdup_duplicate_phase,
+                drbbdup_analyse_phase, drbbdup_link_phase, NULL,
+                bb_instrum_priority) || drreg_init(&drreg_ops) != DRREG_SUCCESS
+                || !drmgr_register_signal_event_ex(drbbdup_event_signal,
+                        &fault_priority))
+            DR_ASSERT(false);
 
-    if (!drmgr_register_thread_init_event(drbbdup_thread_init)
-            || !drmgr_register_thread_exit_event(drbbdup_thread_exit))
-        return DRBBDUP_ERROR;
+        if (!drmgr_register_thread_init_event(drbbdup_thread_init)
+                || !drmgr_register_thread_exit_event(drbbdup_thread_exit))
+            return DRBBDUP_ERROR;
 
-    tls_idx = drmgr_register_tls_field();
-    if (tls_idx == -1)
-        return DRBBDUP_ERROR;
+        tls_idx = drmgr_register_tls_field();
+        if (tls_idx == -1)
+            return DRBBDUP_ERROR;
 
-    /* We make use of three slots for spillage */
-    dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 3, 0);
+        /* We make use of three slots for spillage */
+        dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 3, 0);
 
+    }
+
+    drreg_ref_count++;
     return DRBBDUP_SUCCESS;
 }
 
 drbbdup_status_t drbbdup_exit(void) {
 
-    /* Destroy the faulty page */
-    DR_ASSERT(faulty_page);
-    dr_nonheap_free(faulty_page, dr_page_size());
+    DR_ASSERT(drreg_ref_count > 0);
+    drreg_ref_count--;
 
-    hashtable_delete(&case_manager_table);
+    if (drreg_ref_count == 0) {
 
-    drmgr_unregister_bb_instrumentation_ex_event(drbbdup_duplicate_phase,
-            drbbdup_analyse_phase, drbbdup_link_phase, NULL);
+        /* Destroy the faulty page */
+        DR_ASSERT(faulty_page);
+        dr_nonheap_free(faulty_page, dr_page_size());
 
-    drmgr_unregister_signal_event(drbbdup_event_signal);
+        hashtable_delete(&case_manager_table);
 
-    if (!drmgr_unregister_thread_init_event(drbbdup_thread_init)
-            || !drmgr_unregister_thread_exit_event(drbbdup_thread_exit))
-        return DRBBDUP_ERROR;
+        drmgr_unregister_bb_instrumentation_ex_event(drbbdup_duplicate_phase,
+                drbbdup_analyse_phase, drbbdup_link_phase, NULL);
 
-    dr_raw_tls_cfree(tls_raw_base, 3);
-    drmgr_unregister_tls_field(tls_idx);
+        drmgr_unregister_signal_event(drbbdup_event_signal);
 
-    drreg_exit();
+        if (!drmgr_unregister_thread_init_event(drbbdup_thread_init)
+                || !drmgr_unregister_thread_exit_event(drbbdup_thread_exit))
+            return DRBBDUP_ERROR;
+
+        dr_raw_tls_cfree(tls_raw_base, 3);
+        drmgr_unregister_tls_field(tls_idx);
+
+        drreg_exit();
 
 #ifdef ENABLE_STATS
-    drbbdup_stat_print_stats();
+        drbbdup_stat_print_stats();
 #endif
-
+    }
     return DRBBDUP_SUCCESS;
 }

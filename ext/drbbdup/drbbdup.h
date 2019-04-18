@@ -60,7 +60,6 @@ typedef struct {
 
     unsigned int condition_val;
     bool is_defined;
-    void *user_data;
 } drbbdup_case_t;
 
 /**
@@ -70,10 +69,8 @@ typedef struct {
 
     drbbdup_case_t default_case;
     drbbdup_case_t cases[NUMBER_OF_DUPS];
-    void *user_data;
     bool spill_eflag_dead;
     bool apply_default;
-
 } drbbdup_manager_t;
 
 /**
@@ -81,6 +78,12 @@ typedef struct {
  */
 typedef bool (*drbbdup_create_default_manager_t)(void *drcontext,
         instrlist_t *bb, drbbdup_manager_t *manager, void *user_data);
+
+/**
+ * TODO
+ */
+typedef void (*drbbdup_pre_analyse_bb_t)(void *drcontext, instrlist_t *bb,
+        drbbdup_manager_t *manager, void *user_data);
 
 /**
  * TODO
@@ -117,10 +120,7 @@ DR_EXPORT void drbbdup_set_comparator(void *comparator_val);
  */
 DR_EXPORT opnd_t drbbdup_get_comparator_opnd();
 
-/**
- * TODO
- */
-typedef void (*drbbdup_destroy_manager_data_t)(void *user_data);
+
 
 /** Specifies the options when initialising drbbdup. */
 typedef struct {
@@ -128,9 +128,8 @@ typedef struct {
     void *user_data;
     drbbdup_create_default_manager_t create_manager;
     drbbdup_instrument_bb_t instrument_bb;
+    drbbdup_pre_analyse_bb_t pre_analyse_bb;
     drbbdup_analyse_bb_t analyse_bb;
-    drbbdup_destroy_manager_data_t destroy_manager_user_data;
-    drbbdup_destroy_manager_data_t destroy_case_user_data;
     drbbdup_get_comparator_t get_comparator;
     size_t required_size;
 } drbbdup_options_t;
@@ -138,7 +137,8 @@ typedef struct {
 /**
  * TODO
  */
-DR_EXPORT drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in, drmgr_priority_t *bb_instrum_priority);
+DR_EXPORT drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in,
+        drmgr_priority_t *bb_instrum_priority);
 
 /**
  * TODO
