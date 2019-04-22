@@ -11,6 +11,10 @@
  * Those who really care, can just change and compile Dr. I am a fan of less options!
  */
 #define NUMBER_OF_DUPS 3
+#define DRBBDUP_CMP_REG DR_REG_XCX
+
+#define ENABLE_DELAY_FP_GEN
+#define FP_GEN_THRESHOLD 3
 
 /**
  * @file drbbdup.h
@@ -69,8 +73,10 @@ typedef struct {
 
     drbbdup_case_t default_case;
     drbbdup_case_t cases[NUMBER_OF_DUPS];
-    bool spill_eflag_dead;
+    bool is_cmp_reg_dead;
+    bool is_eflag_dead;
     bool apply_default;
+    bool apply_fp_gen;
 } drbbdup_manager_t;
 
 /**
@@ -119,8 +125,6 @@ DR_EXPORT void drbbdup_set_comparator(void *comparator_val);
  * TODO
  */
 DR_EXPORT opnd_t drbbdup_get_comparator_opnd();
-
-
 
 /** Specifies the options when initialising drbbdup. */
 typedef struct {
