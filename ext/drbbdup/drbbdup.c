@@ -22,6 +22,7 @@
 /* After three execution of the slow path, we enable fast path generation */
 
 #define HASH_BIT_TABLE 8
+#define HIT_COUNT_TABLE_SIZE 4000
 
 /**
  * Instance count of drbbdup
@@ -70,6 +71,9 @@ static drbbdup_options_t opts;
 
 typedef struct {
     int case_index;
+#ifdef    ENABLE_DELAY_FP_GEN
+    uint hit_counts[HIT_COUNT_TABLE_SIZE];
+#endif
 } drbbdup_per_thread;
 
 static opnd_t drbbdup_get_tls_raw_slot_opnd(int slot_idx) {
@@ -77,6 +81,11 @@ static opnd_t drbbdup_get_tls_raw_slot_opnd(int slot_idx) {
     return opnd_create_far_base_disp_ex(tls_raw_reg, REG_NULL, REG_NULL, 1,
             tls_raw_base + (slot_idx * (sizeof(void *))),
             OPSZ_PTR, false, true, false);
+}
+
+static uint drbbdip_get_hitcount_hash(intptr_t bb_id) {
+
+    return (uint) bb_id & (HIT_COUNT_TABLE_SIZE - 1);
 }
 
 /**
@@ -167,8 +176,7 @@ static bool drbbdup_consider_default(drbbdup_manager_t *manager) {
 #else
     /* Do we need to consider default case now? */
     uint case_count = drbbdup_count_dups(manager);
-    return (case_count == NUMBER_OF_DUPS || manager->apply_default
-            || ENABLE_DELAY_FP_GEN);
+    return (case_count == NUMBER_OF_DUPS || manager->apply_default);
 
 #endif
 
@@ -342,10 +350,10 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     uint total_dups = drbbdup_count_dups(manager);
 
 #ifdef ENABLE_DELAY_FP_GEN
-        total_dups++;
+    total_dups++;
 #else
     if (total_dups == NUMBER_OF_DUPS || manager->apply_default)
-        total_dups++;
+    total_dups++;
 #endif
 
     DR_ASSERT(total_dups >= 1);
@@ -744,36 +752,26 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation,
 
 #ifdef ENABLE_DELAY_FP_GEN
 
-            if (!manager->apply_fp_gen) {
+            opnd_t hit_table_opnd;
+            hit_table_opnd = drbbdup_get_tls_raw_slot_opnd(4);
 
-                opnd_t hit_counter_opnd;
-                hit_counter_opnd = drbbdup_get_tls_raw_slot_opnd(4);
+            /* Load the hit counter table */
+            instr = INSTR_CREATE_mov_ld(drcontext, scratch_reg_opnd,
+                    hit_table_opnd);
+            instrlist_meta_preinsert(bb, where, instr);
 
-                /* Load the hit counter */
-                instr = INSTR_CREATE_mov_ld(drcontext, scratch_reg_opnd,
-                        hit_counter_opnd);
-                instrlist_meta_preinsert(bb, where, instr);
+            uint hash = drbbdip_get_hitcount_hash((intptr_t) translation);
+            opnd_t hit_count_opnd = OPND_CREATE_MEM32(DRBBDUP_CMP_REG, hash *sizeof(uint));
 
-                /* Increment the hit counter */
-                opnd = opnd_create_immed_uint(1, OPSZ_1);
-                instr = INSTR_CREATE_add(drcontext, scratch_reg_opnd, opnd);
-                instrlist_meta_preinsert(bb, where, instr);
+            /* Decrement hit counter */
+            opnd = opnd_create_immed_int(1, OPSZ_4);
+            instr = INSTR_CREATE_sub(drcontext, hit_count_opnd, opnd);
+            instrlist_meta_preinsert(bb, where, instr);
 
-                /* Store the counter */
-                instr = INSTR_CREATE_mov_st(drcontext, hit_counter_opnd,
-                        scratch_reg_opnd);
-                instrlist_meta_preinsert(bb, where, instr);
-
-                /* If counter has not reached threshold, jmp to default */
-                opnd = opnd_create_immed_uint((uintptr_t) FP_GEN_THRESHOLD,
-                        opnd_size_from_bytes(sizeof(size_t)));
-                instr = INSTR_CREATE_cmp(drcontext, scratch_reg_opnd, opnd);
-                instrlist_meta_preinsert(bb, where, instr);
-
-                label_opnd = opnd_create_instr(labels[0]);
-                instr = INSTR_CREATE_jcc(drcontext, OP_jge, label_opnd);
-                instrlist_meta_preinsert(bb, where, instr);
-            }
+            /* If counter has NOT reached threshold, jmp to default */
+            label_opnd = opnd_create_instr(labels[0]);
+            instr = INSTR_CREATE_jcc(drcontext, OP_jnz, label_opnd);
+            instrlist_meta_preinsert(bb, where, instr);
 #endif
         }
 
@@ -973,7 +971,15 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
             if (!manager)
                 DR_ASSERT_MSG(false, "Cant find manager!\n");
 
-            manager->apply_fp_gen = true;
+#ifdef  ENABLE_DELAY_FP_GEN
+            /* Refresh hit counter*/
+            uint hash = drbbdip_get_hitcount_hash((intptr_t) bb_pc);
+            drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
+                    drcontext, tls_idx);
+
+            DR_ASSERT(pt->hit_counts[hash] == 0);
+            pt->hit_counts[hash] = FP_GEN_THRESHOLD;
+#endif
 
             /* Find an undefined case, and set it up for the new conditional. */
 
@@ -987,7 +993,6 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
                 int i;
                 for (i = 0; i < NUMBER_OF_DUPS; i++) {
 
-
                     if (!(manager->cases[i].is_defined)) {
 
                         manager->cases[i].is_defined = true;
@@ -995,7 +1000,8 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
                                 (unsigned int) (uintptr_t) conditional_val;
 
                         break;
-                    }else if (manager->cases[i].condition_val == conditional_val)
+                    } else if (manager->cases[i].condition_val
+                            == conditional_val)
                         break;
                 }
             }
@@ -1033,7 +1039,7 @@ static dr_signal_action_t drbbdup_event_signal(void *drcontext,
                         drbbdup_get_spilled(1));
             }
 
-            if (!manager->is_eflag_dead) {
+            if (!manager->is_cmp_reg_dead) {
                 reg_set_value(DRBBDUP_CMP_REG, info->mcontext,
                         drbbdup_get_spilled(3));
             }
@@ -1054,6 +1060,17 @@ static void drbbdup_thread_init(void *drcontext) {
     drbbdup_per_thread *pt = (drbbdup_per_thread *) dr_thread_alloc(drcontext,
             sizeof(*pt));
     pt->case_index = 0;
+
+#ifdef    ENABLE_DELAY_FP_GEN
+    for (int i = 0; i < HIT_COUNT_TABLE_SIZE; i++){
+        pt->hit_counts[i] = FP_GEN_THRESHOLD;
+    }
+
+    byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
+            + (4 * (sizeof(void *))));
+    void **addr_hitcount = (void **) addr;
+    *addr_hitcount = pt->hit_counts;
+#endif
     drmgr_set_tls_field(drcontext, tls_idx, (void *) pt);
 }
 

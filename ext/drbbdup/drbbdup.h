@@ -14,7 +14,7 @@
 #define DRBBDUP_CMP_REG DR_REG_XCX
 
 #define ENABLE_DELAY_FP_GEN
-#define FP_GEN_THRESHOLD 3
+#define FP_GEN_THRESHOLD 10
 
 /**
  * @file drbbdup.h
@@ -76,7 +76,6 @@ typedef struct {
     bool is_cmp_reg_dead;
     bool is_eflag_dead;
     bool apply_default;
-    bool apply_fp_gen;
 } drbbdup_manager_t;
 
 /**
