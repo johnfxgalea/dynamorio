@@ -35,8 +35,6 @@ unsigned long total_bails = 0;
 /** Number of case entries **/
 unsigned long case_num[NUMBER_OF_DUPS + 1];
 
-/** Number of case entries **/
-unsigned long limit_reached;
 
 /*******************************************************
  * Clean Calls for tracking. I keep things simple and use clean calls.
@@ -53,11 +51,6 @@ void drbbdup_stat_inc_instrum_bb() {
 void drbbdup_stat_inc_non_applicable() {
 
     non_applicable++;
-}
-
-void drbbdup_stat_inc_limit_reached() {
-
-    limit_reached++;
 }
 
 void drbbdup_stat_inc_gen() {
@@ -106,7 +99,6 @@ void drbbdup_stat_print_stats() {
     dr_fprintf(STDERR, "Total BB: %lu\n", total_bb);
     dr_fprintf(STDERR, "Total Skipped: %lu\n", non_applicable);
     dr_fprintf(STDERR, "Number of BB instrumented: %lu\n", bb_instrumented);
-    dr_fprintf(STDERR, "Limit Reached: %lu\n", limit_reached);
 
     if (bb_instrumented != 0)
         dr_fprintf(STDERR, "Avg BB size: %lu\n\n",

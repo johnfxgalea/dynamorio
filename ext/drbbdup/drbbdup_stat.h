@@ -12,15 +12,13 @@
 #include "drmgr.h"
 
 // Comment out macro for no stats
-//#define ENABLE_STATS 1
+#define ENABLE_STATS 1
 
 void drbbdup_stat_inc_bb();
 
 void drbbdup_stat_inc_instrum_bb();
 
 void drbbdup_stat_inc_non_applicable();
-
-void drbbdup_stat_inc_limit_reached();
 
 void drbbdup_stat_inc_gen();
 

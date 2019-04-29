@@ -10,11 +10,11 @@
  * I am not sure if I should give the user the option to change this at runtime.
  * Those who really care, can just change and compile Dr. I am a fan of less options!
  */
-#define NUMBER_OF_DUPS 3
+#define NUMBER_OF_DUPS 2
 #define DRBBDUP_CMP_REG DR_REG_XCX
 
 #define ENABLE_DELAY_FP_GEN
-#define FP_GEN_THRESHOLD 10
+#define FP_GEN_THRESHOLD 50000000
 
 /**
  * @file drbbdup.h
@@ -73,9 +73,13 @@ typedef struct {
 
     drbbdup_case_t default_case;
     drbbdup_case_t cases[NUMBER_OF_DUPS];
+
     bool is_cmp_reg_dead;
     bool is_eflag_dead;
+
     bool apply_default;
+    bool enable_dynamic_fp;
+
 } drbbdup_manager_t;
 
 /**
