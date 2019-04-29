@@ -989,10 +989,6 @@ static void drbbdup_handle_new_case(app_pc bb_pc, void *tag) {
                         (unsigned int) (uintptr_t) conditional_val;
 
                 break;
-            } else if (manager->cases[i].condition_val == conditional_val) {
-
-                hashtable_unlock(&case_manager_table);
-                return;
             }
         }
     }
