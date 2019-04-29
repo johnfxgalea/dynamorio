@@ -76,7 +76,7 @@ typedef struct {
 #endif
 } drbbdup_per_thread;
 
-static void drbbdup_handle_new_case(app_pc bb_pc);
+static void drbbdup_handle_new_case(app_pc bb_pc, void *tag);
 
 static opnd_t drbbdup_get_tls_raw_slot_opnd(int slot_idx) {
 
@@ -203,7 +203,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-    drbbdup_stat_inc_bb();
+        drbbdup_stat_inc_bb();
 #endif
 
     /* If the first instruction is a branch statement, we simply return.
@@ -214,7 +214,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
         if (!translating)
-        drbbdup_stat_inc_non_applicable();
+            drbbdup_stat_inc_non_applicable();
 #endif
 
         return DR_EMIT_DEFAULT;
@@ -238,7 +238,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
         if (!translating)
-        drbbdup_stat_inc_non_applicable();
+            drbbdup_stat_inc_non_applicable();
 #endif
 
         /** Too small. **/
@@ -247,7 +247,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-    drbbdup_stat_inc_bb_size(cur_size);
+        drbbdup_stat_inc_bb_size(cur_size);
 #endif
 
     /* Example:
@@ -316,7 +316,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
             if (!translating)
-            drbbdup_stat_inc_non_applicable();
+                drbbdup_stat_inc_non_applicable();
 #endif
 
             instrlist_clear_and_destroy(drcontext, original);
@@ -336,7 +336,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-    drbbdup_stat_inc_instrum_bb();
+        drbbdup_stat_inc_instrum_bb();
 #endif
 
     drreg_set_bb_properties(drcontext, DRREG_IGNORE_CONTROL_FLOW);
@@ -357,7 +357,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 #ifdef ENABLE_DELAY_FP_GEN
     total_dups++;
 #else
-    if (total_dups == NUMBER_OF_DUPS || manager->apply_default || !manager->enable_dynamic_fp){
+    if (total_dups == NUMBER_OF_DUPS || manager->apply_default || !manager->enable_dynamic_fp) {
 
         manager->apply_default = true;
         total_dups++;
@@ -636,7 +636,7 @@ static void drbbdup_set_case_labels(void *drcontext, instrlist_t *bb,
     }
 }
 
-static void drbbdup_insert_jumps(void *drcontext, app_pc translation,
+static void drbbdup_insert_jumps(void *drcontext, app_pc translation, void *tag,
         instrlist_t *bb, instr_t *where, drbbdup_manager_t *manager) {
 
     /*
@@ -789,7 +789,7 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation,
         /* Insert faulty instruction here */
 
         dr_insert_clean_call(drcontext, bb, where, drbbdup_handle_new_case,
-        false, 1, OPND_CREATE_INTPTR(translation));
+        false, 2, OPND_CREATE_INTPTR(translation), OPND_CREATE_INTPTR(tag));
     }
 
 #ifdef ENABLE_STATS
@@ -912,7 +912,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
                                 == (void * ) DRBBDUP_LABEL_NORMAL);
 
         /* Insert jumps prior entry label of  block instance */
-        drbbdup_insert_jumps(drcontext, pc, bb, instr, manager);
+        drbbdup_insert_jumps(drcontext, pc, tag, bb, instr, manager);
         /* Insert restoration after entry label of block instance */
         drbbdup_insert_landing_restoration(drcontext, bb, instr_get_next(instr),
                 manager);
@@ -940,7 +940,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
  * New Case HANDING
  */
 
-static void drbbdup_handle_new_case(app_pc bb_pc) {
+static void drbbdup_handle_new_case(app_pc bb_pc, void *tag) {
 
 #ifdef ENABLE_STATS
     drbbdup_stat_inc_gen();
@@ -1000,9 +1000,8 @@ static void drbbdup_handle_new_case(app_pc bb_pc) {
     hashtable_unlock(&case_manager_table);
 
     LOG(drcontext, DR_LOG_ALL, 2,
-        "%s Found new taint case! I am about to flush for %p\n",
-        __FUNCTION__, bb_pc);
-
+            "%s Found new taint case! I am about to flush for %p\n",
+            __FUNCTION__, bb_pc);
 
     /**
      * This is an important step.
@@ -1016,7 +1015,7 @@ static void drbbdup_handle_new_case(app_pc bb_pc) {
     dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_ALL, };
     dr_get_mcontext(drcontext, &mcontext);
 
-    bool succ = dr_flush_region(bb_pc, 1);
+    bool succ = dr_delete_fragment(drcontext, tag);
     DR_ASSERT(succ);
 
     if (!manager->is_eflag_dead) {
