@@ -29,8 +29,9 @@
 
 /* After three execution of the slow path, we enable fast path generation */
 
+
 #define HASH_BIT_TABLE 8
-#define HIT_COUNT_TABLE_SIZE 4000
+#define HIT_COUNT_TABLE_SIZE 6000
 
 /**
  * Instance count of drbbdup
