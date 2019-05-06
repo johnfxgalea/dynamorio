@@ -29,7 +29,6 @@
 
 /* After three execution of the slow path, we enable fast path generation */
 
-
 #define HASH_BIT_TABLE 8
 #define HIT_COUNT_TABLE_SIZE 6000
 
@@ -192,11 +191,11 @@ static void drbbdup_add_dup(void *drcontext, instrlist_t *bb,
 }
 
 static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
-        instrlist_t *bb, bool for_trace, bool translating, OUT void **user_data) {
+        instrlist_t *bb, bool for_trace, bool translating) {
 
 #ifdef ENABLE_STATS
     if (!translating)
-        drbbdup_stat_inc_bb();
+    drbbdup_stat_inc_bb();
 #endif
 
     /* If the first instruction is a branch statement, we simply return.
@@ -207,7 +206,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
         if (!translating)
-            drbbdup_stat_inc_non_applicable();
+        drbbdup_stat_inc_non_applicable();
 #endif
 
         return DR_EMIT_DEFAULT;
@@ -231,7 +230,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
         if (!translating)
-            drbbdup_stat_inc_non_applicable();
+        drbbdup_stat_inc_non_applicable();
 #endif
 
         /** Too small. **/
@@ -240,7 +239,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-        drbbdup_stat_inc_bb_size(cur_size);
+    drbbdup_stat_inc_bb_size(cur_size);
 #endif
 
     /* Example:
@@ -311,7 +310,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
             if (!translating)
-                drbbdup_stat_inc_non_applicable();
+            drbbdup_stat_inc_non_applicable();
 #endif
 
             instrlist_clear_and_destroy(drcontext, original);
@@ -329,7 +328,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-        drbbdup_stat_inc_instrum_bb();
+    drbbdup_stat_inc_instrum_bb();
 #endif
 
     drreg_set_bb_properties(drcontext, DRREG_IGNORE_CONTROL_FLOW);
@@ -754,6 +753,18 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation, void *tag,
             instr = INSTR_CREATE_jcc(drcontext, OP_jz, label_opnd);
             instrlist_meta_preinsert(bb, where, instr);
 
+            /* Check whether it is in bounds */
+
+//            instr = INSTR_CREATE_popcnt(drcontext, scratch_reg_opnd,
+//                    scratch_reg_opnd);
+//            instrlist_meta_preinsert(bb, where, instr);
+//
+//            opnd = opnd_create_immed_uint((uintptr_t) 3, OPSZ_PTR);
+//            instr = INSTR_CREATE_cmp(drcontext, scratch_reg_opnd, opnd);
+//            instrlist_meta_preinsert(bb, where, instr);
+//
+//            instr = INSTR_CREATE_jcc(drcontext, OP_jg, label_opnd);
+//            instrlist_meta_preinsert(bb, where, instr);
 #ifdef ENABLE_DELAY_FP_GEN
 
             opnd_t hit_table_opnd;
@@ -813,8 +824,6 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
         return DR_EMIT_DEFAULT;
     }
 
-
-
     if (!drmgr_is_first_instr(drcontext, instr)) {
 
         drbbdup_case_t *drbbdup_case = NULL;
@@ -871,7 +880,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 
                 /* Include restoration before jmp instr */
                 if (result && label_info == DRBBDUP_LABEL_NORMAL) {
-                    drreg_restore_all_now(drcontext, bb, instr_get_prev(instr));
+                    drreg_restore_all_now(drcontext, bb, instr);
 
                     /* Don't bother instrumenting jmp exists of fast paths */
                     return DR_EMIT_DEFAULT;
@@ -1044,7 +1053,6 @@ static void drbbdup_destroy_manager(void *manager_opaque) {
     dr_global_free(manager, sizeof(drbbdup_manager_t));
 }
 
-
 static void drbbdup_thread_init(void *drcontext) {
 
     drbbdup_per_thread *pt = (drbbdup_per_thread *) dr_thread_alloc(drcontext,
@@ -1095,7 +1103,14 @@ drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in,
 
         drreg_options_t drreg_ops = { sizeof(drreg_ops), 5, false, NULL, true };
 
-        if (!drmgr_register_bb_instrumentation_ex_event(drbbdup_duplicate_phase,
+        drmgr_priority_t priority = { sizeof(drmgr_priority_t), "DRBBDUP_DUPS",
+        NULL, NULL, -7500 };
+
+        if (!drmgr_register_bb_app2app_event(drbbdup_duplicate_phase,
+                &priority))
+            DR_ASSERT(false);
+
+        if (!drmgr_register_bb_instrumentation_ex_event(NULL,
                 drbbdup_analyse_phase, drbbdup_link_phase, NULL,
                 bb_instrum_priority) || drreg_init(&drreg_ops) != DRREG_SUCCESS)
             DR_ASSERT(false);
@@ -1124,7 +1139,9 @@ drbbdup_status_t drbbdup_exit(void) {
 
     if (drreg_ref_count == 0) {
 
-        drmgr_unregister_bb_instrumentation_ex_event(drbbdup_duplicate_phase,
+        drmgr_unregister_bb_app2app_event(drbbdup_duplicate_phase);
+
+        drmgr_unregister_bb_instrumentation_ex_event(NULL,
                 drbbdup_analyse_phase, drbbdup_link_phase, NULL);
 
         if (!drmgr_unregister_thread_init_event(drbbdup_thread_init)
