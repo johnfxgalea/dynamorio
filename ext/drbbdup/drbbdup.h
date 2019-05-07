@@ -83,6 +83,7 @@ typedef struct {
 
     bool apply_default;
     bool enable_dynamic_fp;
+    size_t set_threshold;
 
 } drbbdup_manager_t;
 
