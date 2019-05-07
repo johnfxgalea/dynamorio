@@ -755,16 +755,20 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation, void *tag,
 
             /* Check whether it is in bounds */
 
-//            instr = INSTR_CREATE_popcnt(drcontext, scratch_reg_opnd,
-//                    scratch_reg_opnd);
-//            instrlist_meta_preinsert(bb, where, instr);
-//
-//            opnd = opnd_create_immed_uint((uintptr_t) 3, OPSZ_PTR);
-//            instr = INSTR_CREATE_cmp(drcontext, scratch_reg_opnd, opnd);
-//            instrlist_meta_preinsert(bb, where, instr);
-//
-//            instr = INSTR_CREATE_jcc(drcontext, OP_jg, label_opnd);
-//            instrlist_meta_preinsert(bb, where, instr);
+            if (manager->set_threshold > 0) {
+
+                instr = INSTR_CREATE_popcnt(drcontext, scratch_reg_opnd,
+                        scratch_reg_opnd);
+                instrlist_meta_preinsert(bb, where, instr);
+
+                opnd = opnd_create_immed_uint(
+                        (uintptr_t) manager->set_threshold, OPSZ_PTR);
+                instr = INSTR_CREATE_cmp(drcontext, scratch_reg_opnd, opnd);
+                instrlist_meta_preinsert(bb, where, instr);
+
+                instr = INSTR_CREATE_jcc(drcontext, OP_jg, label_opnd);
+                instrlist_meta_preinsert(bb, where, instr);
+            }
 #ifdef ENABLE_DELAY_FP_GEN
 
             opnd_t hit_table_opnd;
