@@ -575,9 +575,12 @@ static void drbbdup_insert_landing_restoration(void *drcontext, instrlist_t *bb,
 
     /** When control reached a bb, we need to restore from the JMP **/
     if (!manager->is_eflag_dead) {
+
         drbbdup_restore_register(drcontext, bb, where, 2, DR_REG_XAX);
         dr_restore_arith_flags_from_xax(drcontext, bb, where);
-        drbbdup_restore_register(drcontext, bb, where, 1, DR_REG_XAX);
+
+        if (!manager->is_xax_dead)
+            drbbdup_restore_register(drcontext, bb, where, 1, DR_REG_XAX);
     }
 
     if (!manager->is_cmp_reg_dead) {
@@ -651,16 +654,24 @@ static void drbbdup_insert_jumps(void *drcontext, app_pc translation, void *tag,
             != DRREG_SUCCESS)
         DR_ASSERT(false);
 
+    if (drreg_is_register_dead(drcontext, DR_REG_XAX, where,
+            &(manager->is_xax_dead)) != DRREG_SUCCESS)
+        DR_ASSERT(false);
+
     if (drreg_is_register_dead(drcontext, DRBBDUP_CMP_REG, where,
             &(manager->is_cmp_reg_dead)) != DRREG_SUCCESS)
         DR_ASSERT(false);
 
     if (!manager->is_eflag_dead) {
 
-        drbbdup_spill_register(drcontext, bb, where, 1, DR_REG_XAX);
+        if (!manager->is_xax_dead)
+            drbbdup_spill_register(drcontext, bb, where, 1, DR_REG_XAX);
+
         dr_save_arith_flags_to_xax(drcontext, bb, where);
         drbbdup_spill_register(drcontext, bb, where, 2, DR_REG_XAX);
-        drbbdup_restore_register(drcontext, bb, where, 1, DR_REG_XAX);
+
+        if (!manager->is_xax_dead)
+            drbbdup_restore_register(drcontext, bb, where, 1, DR_REG_XAX);
     }
 
     if (!manager->is_cmp_reg_dead) {
@@ -1034,7 +1045,8 @@ static void drbbdup_handle_new_case(app_pc bb_pc, void *tag) {
             newval |= EFLAGS_OF;
         mcontext.xflags = newval;
 
-        reg_set_value(DR_REG_XAX, &mcontext, drbbdup_get_spilled(1));
+        if (!manager->is_xax_dead)
+            reg_set_value(DR_REG_XAX, &mcontext, drbbdup_get_spilled(1));
     }
 
     if (!manager->is_cmp_reg_dead) {
