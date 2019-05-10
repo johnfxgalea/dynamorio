@@ -80,6 +80,7 @@ typedef struct {
 
     bool is_cmp_reg_dead;
     bool is_eflag_dead;
+    bool is_xax_dead;
 
     bool apply_default;
     bool enable_dynamic_fp;
