@@ -33,7 +33,7 @@ unsigned long gen_num = 0;
 unsigned long total_bails = 0;
 
 /** Number of case entries **/
-unsigned long case_num[NUMBER_OF_DUPS + 1];
+unsigned long case_num[21];
 
 
 /*******************************************************
@@ -108,7 +108,7 @@ void drbbdup_stat_print_stats() {
     dr_fprintf(STDERR, "Total bb exec: %lu\n", total_exec);
     dr_fprintf(STDERR, "Total bails: %lu\n", total_bails);
 
-    for (int i = 0; i < NUMBER_OF_DUPS + 1; i++)
+    for (int i = 0; i < 21; i++)
         dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
 
 }

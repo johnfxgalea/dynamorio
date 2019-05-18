@@ -6,35 +6,15 @@
 #include "drvector.h"
 
 /**
- * To change the number of fast paths simply set the following number.
- * I am not sure if I should give the user the option to change this at runtime.
- * Those who really care, can just change and compile Dr. I am a fan of less options!
- */
-
-/* One of the next projects involves performing a thorough parameter analysis! */
-
-#define NUMBER_OF_DUPS 8
-#define DRBBDUP_CMP_REG DR_REG_XCX
-
-
-#define ENABLE_DELAY_FP_GEN
-#define FP_GEN_THRESHOLD 500
-
-/**
  * @file drbbdup.h
  * @brief Header for DynamoRIO Basic Block Duplication Management Extension
  */
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
- * Priorities of drmgr instrumentation passes used by drreg.  Users
- * of drreg can use the name DRMGR_PRIORITY_NAME_DRREG in the
- * drmgr_priority_t.before field or can use these numeric priorities
- * in the drmgr_priority_t.priority field to ensure proper
- * instrumentation pass ordering.
+ * TODO
  */
 enum {
     /** Priority of drbbdup*/
@@ -42,7 +22,6 @@ enum {
     /** Priority of drbbdup fault handling event */
     DRMGR_PRIORITY_FAULT_DRBBDUP = -1500,
 };
-
 /**
  * TODO
  */
@@ -65,60 +44,88 @@ typedef enum {
  * TODO
  */
 typedef struct {
-
-    unsigned int condition_val;
-    bool is_defined;
-} drbbdup_case_t;
-
-/**
- * TODO
- */
-typedef struct {
-
-    drbbdup_case_t default_case;
-    drbbdup_case_t cases[NUMBER_OF_DUPS];
-
-    bool is_cmp_reg_dead;
-    bool is_eflag_dead;
-    bool is_xax_dead;
-
-    bool apply_default;
     bool enable_dynamic_fp;
-    size_t set_threshold;
-
-} drbbdup_manager_t;
+    size_t max_pop_threshold;
+} drbbdup_manager_options_t;
 
 /**
  * TODO
  */
-typedef bool (*drbbdup_create_default_manager_t)(void *drcontext,
-        instrlist_t *bb, drbbdup_manager_t *manager, void *user_data);
+typedef bool (*drbbdup_create_default_manager_t)(void *drbbdup_ctx,
+        void *drcontext, instrlist_t *bb, drbbdup_manager_options_t *options,
+        uint *default_case_value, void *user_data);
 
 /**
  * TODO
  */
 typedef void (*drbbdup_pre_analyse_bb_t)(void *drcontext, instrlist_t *bb,
-        drbbdup_manager_t *manager, void *user_data);
+        void *user_data, void **pre_analysis_result);
+
+/**
+ * TODO
+ */
+typedef void (*drbbdup_destroy_pre_analysis_t)(void *drcontext, void *user_data,
+        void *pre_analysis_result);
 
 /**
  * TODO
  */
 typedef void (*drbbdup_analyse_bb_t)(void *drcontext, instrlist_t *bb,
-        drbbdup_manager_t * manager, drbbdup_case_t *case_info,
-        void *user_data);
+        uint case_val, void *user_data, void *pre_analysis_data,
+        void **analysis_result);
+
+/**
+ * TODO
+ */
+typedef void (*drbbdup_destroy_analysis_t)(void *drcontext, void *user_data,
+        void *pre_analysis_data, void *delete_analysis_result);
+
+/**
+ * TODO
+ */
+typedef void (*drbbdup_nan_analyse_bb_t)(void *drcontext, instrlist_t *bb,
+        void *user_data, void *pre_analysis_data, void **nan_analysis_result);
 
 /**
  * TODO
  */
 typedef void (*drbbdup_instrument_bb_t)(void *drcontext, instrlist_t *bb,
-        instr_t *where, drbbdup_manager_t * manager, drbbdup_case_t *case_info,
-        void *user_data);
+        instr_t *where, uint case_val, void *user_data, void *pre_analysis_data,
+        void *analysis_data);
+
+/**
+ * TODO
+ */
+typedef void (*drbbdup_nan_instrument_bb_t)(void *drcontext, instrlist_t *bb,
+        instr_t *where, void *user_data);
 
 /**
  * TODO
  */
 typedef void (*drbbdup_get_comparator_t)(void *drcontext, instrlist_t *bb,
-        instr_t *where, drbbdup_manager_t *manager, void *user_data);
+        instr_t *where, void *user_data, void *pre_analysis_data);
+
+/** Specifies the options when initialising drbbdup. */
+typedef struct {
+    drbbdup_create_default_manager_t create_manager;
+    drbbdup_pre_analyse_bb_t pre_analyse_bb;
+    drbbdup_destroy_pre_analysis_t destroy_pre_analysis;
+    drbbdup_analyse_bb_t analyse_bb;
+    drbbdup_destroy_analysis_t destroy_analysis;
+    drbbdup_instrument_bb_t instrument_bb;
+    drbbdup_nan_instrument_bb_t nan_instrument_bb;
+    drbbdup_get_comparator_t get_comparator;
+    void *user_data;
+
+} drbbdup_options_t;
+
+/** Specifies the options when initialising drbbdup. */
+typedef struct {
+
+    uint required_size;
+    uint hit_gen_threshold;
+    int dup_limit;
+} drbbdup_fp_settings_t;
 
 /**
  * TODO
@@ -135,18 +142,6 @@ DR_EXPORT void drbbdup_set_comparator(void *comparator_val);
  */
 DR_EXPORT opnd_t drbbdup_get_comparator_opnd();
 
-/** Specifies the options when initialising drbbdup. */
-typedef struct {
-
-    void *user_data;
-    drbbdup_create_default_manager_t create_manager;
-    drbbdup_instrument_bb_t instrument_bb;
-    drbbdup_pre_analyse_bb_t pre_analyse_bb;
-    drbbdup_analyse_bb_t analyse_bb;
-    drbbdup_get_comparator_t get_comparator;
-    size_t required_size;
-} drbbdup_options_t;
-
 /**
  * TODO
  */
@@ -156,7 +151,26 @@ DR_EXPORT drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in,
 /**
  * TODO
  */
+DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
+        drbbdup_fp_settings_t *fp_settings, drmgr_priority_t *bb_instrum_priority);
+
+
+/**
+ * TODO
+ */
 DR_EXPORT drbbdup_status_t drbbdup_exit(void);
+
+/**
+ * TODO
+ */
+DR_EXPORT drbbdup_status_t drbbdup_register_case_value(void *drbbdup_ctx,
+        uint case_val);
+
+/**
+ * TODO
+ */
+DR_EXPORT drbbdup_status_t drbbdup_unregister_case_value(void *drbbdup_ctx,
+        uint case_val);
 
 #ifdef __cplusplus
 }
