@@ -30,7 +30,7 @@
 #define DRBBDUP_CMP_REG DR_REG_XCX
 
 #define HASH_BIT_TABLE 8
-#define HIT_COUNT_TABLE_SIZE 6000
+#define HIT_COUNT_TABLE_SIZE 4096
 
 /* THREAD SLOTS */
 #define DRBBDUP_COMPARATOR_SLOT 0
@@ -118,7 +118,8 @@ static opnd_t drbbdup_get_tls_raw_slot_opnd(int slot_idx) {
 
 static uint drbbdup_get_hitcount_hash(intptr_t bb_id) {
 
-    uint hash = (uint) bb_id & (HIT_COUNT_TABLE_SIZE - 1);
+    uint hash = ((uint) bb_id) << 1;
+    hash &= (HIT_COUNT_TABLE_SIZE - 1);
     DR_ASSERT(hash < HIT_COUNT_TABLE_SIZE);
     return hash;
 }
