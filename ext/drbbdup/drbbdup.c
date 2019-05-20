@@ -27,8 +27,6 @@
 #    define LOG(dc, mask, level, ...) /* nothing */
 #endif
 
-#define DRBBDUP_CMP_REG DR_REG_XCX
-
 #define HASH_BIT_TABLE 8
 #define HIT_COUNT_TABLE_SIZE 4096
 
@@ -36,8 +34,7 @@
 #define DRBBDUP_COMPARATOR_SLOT 0
 #define DRBBDUP_XAX_REG_SLOT 1
 #define DRBBDUP_FLAG_REG_SLOT 2
-#define DRBBDUP_CMP_REG_SLOT 3
-#define DRBBDUP_HIT_TABLE_SLOT 4
+#define DRBBDUP_HIT_TABLE_SLOT 3
 
 /*************************************************************************
  * Structs
@@ -56,7 +53,6 @@ typedef struct {
 typedef struct {
     drbbdup_case_t default_case;
     drbbdup_case_t *cases;
-    bool is_cmp_reg_dead;
     bool is_eflag_dead;
     bool is_xax_dead;
     drbbdup_manager_options_t manager_opts;
@@ -149,8 +145,6 @@ DR_EXPORT opnd_t drbbdup_get_comparator_opnd() {
 
 static void drbbdup_spill_register(void *drcontext, instrlist_t *ilist,
         instr_t *where, int slot_idx, reg_id_t reg_id) {
-    DR_ASSERT(
-            slot_idx >= DRBBDUP_XAX_REG_SLOT && slot_idx <= DRBBDUP_CMP_REG_SLOT);
 
     opnd_t slot_opnd = drbbdup_get_tls_raw_slot_opnd(slot_idx);
     instr_t *instr = INSTR_CREATE_mov_st(drcontext, slot_opnd,
@@ -160,8 +154,6 @@ static void drbbdup_spill_register(void *drcontext, instrlist_t *ilist,
 
 static void drbbdup_restore_register(void *drcontext, instrlist_t *ilist,
         instr_t *where, int slot_idx, reg_id_t reg_id) {
-    DR_ASSERT(
-            slot_idx >= DRBBDUP_XAX_REG_SLOT && slot_idx <= DRBBDUP_CMP_REG_SLOT);
 
     opnd_t slot_opnd = drbbdup_get_tls_raw_slot_opnd(slot_idx);
     instr_t *instr = INSTR_CREATE_mov_ld(drcontext, opnd_create_reg(reg_id),
@@ -170,8 +162,6 @@ static void drbbdup_restore_register(void *drcontext, instrlist_t *ilist,
 }
 
 static reg_t drbbdup_get_spilled(int slot_idx) {
-    DR_ASSERT(
-            slot_idx >= DRBBDUP_XAX_REG_SLOT && slot_idx <= DRBBDUP_CMP_REG_SLOT);
 
     byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
             + (slot_idx * (sizeof(void *))));
@@ -614,14 +604,11 @@ static void drbbdup_insert_landing_restoration(void *drcontext, instrlist_t *bb,
 
         drbbdup_restore_register(drcontext, bb, where, 2, DR_REG_XAX);
         dr_restore_arith_flags_from_xax(drcontext, bb, where);
-
-        if (!manager->is_xax_dead)
-            drbbdup_restore_register(drcontext, bb, where, 1, DR_REG_XAX);
     }
 
-    if (!manager->is_cmp_reg_dead) {
-        drbbdup_restore_register(drcontext, bb, where, 3, DRBBDUP_CMP_REG);
-    }
+    if (!manager->is_xax_dead)
+        drbbdup_restore_register(drcontext, bb, where, 1, DR_REG_XAX);
+
 }
 
 static void drbbdup_set_case_labels(void *drcontext, instrlist_t *bb,
@@ -694,25 +681,16 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
             &(manager->is_xax_dead)) != DRREG_SUCCESS)
         DR_ASSERT(false);
 
-    if (drreg_is_register_dead(drcontext, DRBBDUP_CMP_REG, where,
-            &(manager->is_cmp_reg_dead)) != DRREG_SUCCESS)
-        DR_ASSERT(false);
+    if (!manager->is_xax_dead)
+        drbbdup_spill_register(drcontext, bb, where, 1, DR_REG_XAX);
 
     if (!manager->is_eflag_dead) {
-
-        if (!manager->is_xax_dead)
-            drbbdup_spill_register(drcontext, bb, where, 1, DR_REG_XAX);
 
         dr_save_arith_flags_to_xax(drcontext, bb, where);
         drbbdup_spill_register(drcontext, bb, where, 2, DR_REG_XAX);
 
         if (!manager->is_xax_dead)
             drbbdup_restore_register(drcontext, bb, where, 1, DR_REG_XAX);
-    }
-
-    if (!manager->is_cmp_reg_dead) {
-
-        drbbdup_spill_register(drcontext, bb, where, 3, DRBBDUP_CMP_REG);
     }
 
     /* Call user function to get comparison */
@@ -735,7 +713,7 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
      * We could compare directly via addressable mem ref, but this will
      * destroy micro-fusing (mem and immed) !
      */
-    opnd_t scratch_reg_opnd = opnd_create_reg(DRBBDUP_CMP_REG);
+    opnd_t scratch_reg_opnd = opnd_create_reg(DR_REG_XAX);
     opnd = drbbdup_get_comparator_opnd();
     instr = INSTR_CREATE_mov_ld(drcontext, scratch_reg_opnd, opnd);
     instrlist_meta_preinsert(bb, where, instr);
@@ -828,7 +806,7 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
             instrlist_meta_preinsert(bb, where, instr);
 
             uint hash = drbbdup_get_hitcount_hash((intptr_t) translation);
-            opnd_t hit_count_opnd = OPND_CREATE_MEM32(DRBBDUP_CMP_REG,
+            opnd_t hit_count_opnd = OPND_CREATE_MEM32(DR_REG_XAX,
                     hash * sizeof(uint));
 
             /* Decrement hit counter */
@@ -1116,16 +1094,12 @@ static void drbbdup_handle_new_case(app_pc bb_pc, void *tag) {
         if (TEST(1, val)) /* seto */
             newval |= EFLAGS_OF;
         mcontext.xflags = newval;
-
-        if (!manager->is_xax_dead)
-            reg_set_value(DR_REG_XAX, &mcontext,
-                    drbbdup_get_spilled(DRBBDUP_XAX_REG_SLOT));
     }
 
-    if (!manager->is_cmp_reg_dead) {
-        reg_set_value(DRBBDUP_CMP_REG, &mcontext,
-                drbbdup_get_spilled(DRBBDUP_CMP_REG_SLOT));
-    }
+    if (!manager->is_xax_dead)
+        reg_set_value(DR_REG_XAX, &mcontext,
+                drbbdup_get_spilled(DRBBDUP_XAX_REG_SLOT));
+
 
     mcontext.pc = bb_pc;
 
@@ -1284,7 +1258,7 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
             return DRBBDUP_ERROR;
 
         /* We make use of three slots for spillage */
-        dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 5, 0);
+        dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 4, 0);
     }
 
     drbbdup_ref_count++;
@@ -1314,7 +1288,7 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
                 || !drmgr_unregister_thread_exit_event(drbbdup_thread_exit))
             return DRBBDUP_ERROR;
 
-        dr_raw_tls_cfree(tls_raw_base, 5);
+        dr_raw_tls_cfree(tls_raw_base, 4);
         drmgr_unregister_tls_field(tls_idx);
 
         drreg_exit();
