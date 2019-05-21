@@ -95,12 +95,14 @@ static int tls_idx = -1;
 
 static drbbdup_options_priv_t opts;
 
+app_pc fp_cache_pc = NULL;
+
 /**************************************************************
  * Prototypes
  */
 
 static void
-drbbdup_handle_new_case(app_pc bb_pc, void *tag);
+drbbdup_handle_new_case();
 
 /**************************************************************
  * Helpers
@@ -822,9 +824,13 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
 
         /* Insert faulty instruction here */
 
-        dr_insert_clean_call(drcontext, bb, where, drbbdup_handle_new_case,
-        false, 2,
-        OPND_CREATE_INTPTR(translation), OPND_CREATE_INTPTR(tag));
+        instr = INSTR_CREATE_mov_imm(drcontext, scratch_reg_opnd,
+                opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
+        instrlist_meta_preinsert(bb, where, instr);
+
+        opnd = opnd_create_pc(fp_cache_pc);
+        instr = INSTR_CREATE_jmp(drcontext, opnd);
+        instrlist_meta_preinsert(bb, where, instr);
     }
 
 #ifdef ENABLE_STATS
@@ -958,7 +964,6 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
         }
     } else {
         /* Set up entry point to fast paths */
-
         DR_ASSERT(
                 instr_is_label(instr)
                         && instr_get_note(instr)
@@ -1013,13 +1018,19 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
  * New Case HANDING
  */
 
-static void drbbdup_handle_new_case(app_pc bb_pc, void *tag) {
+static void drbbdup_handle_new_case() {
 
 #ifdef ENABLE_STATS
     drbbdup_stat_inc_gen();
 #endif
 
     void *drcontext = dr_get_current_drcontext();
+
+    dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_ALL, };
+    dr_get_mcontext(drcontext, &mcontext);
+
+    void *tag = (void *) reg_get_value(DR_REG_XAX, &mcontext);
+    app_pc bb_pc = dr_fragment_app_pc(tag);
 
     drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
             drcontext, tls_idx);
@@ -1074,8 +1085,7 @@ static void drbbdup_handle_new_case(app_pc bb_pc, void *tag) {
      * for our new case which is tracked by the manager.
      */
 
-    dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_ALL, };
-    dr_get_mcontext(drcontext, &mcontext);
+
 
     bool succ = dr_delete_fragment(drcontext, tag);
     DR_ASSERT(succ);
@@ -1100,10 +1110,47 @@ static void drbbdup_handle_new_case(app_pc bb_pc, void *tag) {
         reg_set_value(DR_REG_XAX, &mcontext,
                 drbbdup_get_spilled(DRBBDUP_XAX_REG_SLOT));
 
-
     mcontext.pc = bb_pc;
 
     dr_redirect_execution(&mcontext);
+}
+
+static app_pc init_fp_cache() {
+
+    app_pc cache_pc;
+    instrlist_t *ilist;
+    size_t size;
+
+    void *drcontext = dr_get_current_drcontext();
+
+    ilist = instrlist_create(drcontext);
+
+    dr_insert_clean_call(drcontext, ilist, NULL, drbbdup_handle_new_case, false, 0);
+
+    size = dr_page_size();
+
+    /*
+     *  Allocate code cache, and set Read-Write-Execute permissions.
+     *  The dr_nonheap_alloc function allows you to set permissions.
+     */
+    cache_pc = (app_pc) dr_nonheap_alloc(size,
+    DR_MEMPROT_READ | DR_MEMPROT_WRITE | DR_MEMPROT_EXEC);
+
+    byte *end = instrlist_encode(drcontext, ilist, cache_pc, true);
+    instrlist_clear_and_destroy(drcontext, ilist);
+
+    DR_ASSERT(end - cache_pc <= (int ) size);
+
+    // Change the permission Read-Write-Execute permissions.
+    // In particular, we do not need to write the the private cache
+    dr_memory_protect(cache_pc, size, DR_MEMPROT_READ | DR_MEMPROT_EXEC);
+
+    return cache_pc;
+}
+
+static void destroy_fp_cache(app_pc cache_pc){
+
+    dr_nonheap_free(cache_pc, dr_page_size());
 }
 
 /************************************************************************
@@ -1221,7 +1268,6 @@ static void drbbdup_set_options(drbbdup_options_t *ops_in,
     }
 
     DR_ASSERT(opts.fp_settings.dup_limit > 0);
-
     memcpy(&(opts.functions), ops_in, sizeof(drbbdup_options_t));
 }
 
@@ -1233,6 +1279,9 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
         drmgr_priority_t *bb_instrum_priority) {
 
     if (drbbdup_ref_count == 0) {
+
+        fp_cache_pc = init_fp_cache();
+
         drbbdup_set_options(ops_in, fp_settings);
 
         drreg_options_t drreg_ops = { sizeof(drreg_ops), 5, false, NULL, true };
@@ -1263,8 +1312,9 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
 
     drbbdup_ref_count++;
     return DRBBDUP_SUCCESS;
-
 }
+
+
 
 DR_EXPORT drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in,
         drmgr_priority_t *bb_instrum_priority) {
@@ -1278,6 +1328,9 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
     drbbdup_ref_count--;
 
     if (drbbdup_ref_count == 0) {
+
+        DR_ASSERT(fp_cache_pc);
+        destroy_fp_cache(fp_cache_pc);
 
         drmgr_unregister_bb_app2app_event(drbbdup_duplicate_phase);
 
