@@ -1181,7 +1181,7 @@ static void drbbdup_thread_init(void *drcontext) {
     }
 
     byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
-            + (4 * (sizeof(void *))));
+            + (DRBBDUP_HIT_TABLE_SLOT * (sizeof(void *))));
     void **addr_hitcount = (void **) addr;
     *addr_hitcount = pt->hit_counts;
 
