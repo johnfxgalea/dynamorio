@@ -6,7 +6,6 @@
  */
 
 #include "drbbdup.h"
-#include "drbbdup_stat.h" /* To keep track of stats */
 #include "dr_api.h"
 #include "drreg.h"
 #include "drmgr.h"
@@ -35,6 +34,9 @@
 #define DRBBDUP_XAX_REG_SLOT 1
 #define DRBBDUP_FLAG_REG_SLOT 2
 #define DRBBDUP_HIT_TABLE_SLOT 3
+
+// Comment out macro for no stats
+//#define ENABLE_STATS 1
 
 /*************************************************************************
  * Structs
@@ -103,6 +105,50 @@ app_pc fp_cache_pc = NULL;
 
 static void
 drbbdup_handle_new_case();
+
+/**************************************************************
+ * Stats
+ */
+
+#ifdef ENABLE_STATS
+
+static void drbbdup_stat_inc_bb();
+static void drbbdup_stat_inc_instrum_bb();
+static void drbbdup_stat_inc_non_applicable();
+static void drbbdup_stat_no_fp();
+static void drbbdup_stat_inc_gen();
+static void drbbdup_stat_inc_bb_size(uint size);
+static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
+        instr_t *where, int case_index);
+static void drbbdup_stat_clean_bail_entry(void *drcontext, instrlist_t *bb,
+        instr_t *where);
+static void drbbdup_stat_clean_bb_exec(void *drcontext, instrlist_t *bb,
+        instr_t *where);
+static void drbbdup_stat_print_stats();
+
+/** Total number of BB witnessed.**/
+unsigned long total_bb = 0;
+/** Total number of BBs with fast path generation. **/
+unsigned long bb_instrumented = 0;
+/** Total size of basic blocks (used for avg). **/
+unsigned long total_size = 0;
+/** Number of non applicable bbs **/
+unsigned long non_applicable = 0;
+/** Number of bbs with no dynamic fp **/
+unsigned long no_fp = 0;
+/** Total number of BB executed with faths paths **/
+unsigned long total_exec = 0;
+/** Number of fast paths generated (faults triggered) **/
+unsigned long gen_num = 0;
+/** Number of bails to slow path**/
+unsigned long total_bails = 0;
+
+
+/** Number of case entries **/
+unsigned long *case_num = NULL;
+
+#endif
+
 
 /**************************************************************
  * Helpers
@@ -223,7 +269,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         if (!translating)
         drbbdup_stat_inc_non_applicable();
 #endif
-
         return DR_EMIT_DEFAULT;
     }
 
@@ -350,6 +395,12 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 #ifdef ENABLE_STATS
     if (!translating)
     drbbdup_stat_inc_instrum_bb();
+#endif
+
+#ifdef ENABLE_STATS
+    if (manager->manager_opts.enable_dynamic_fp)
+        if (!translating)
+            drbbdup_stat_no_fp();
 #endif
 
     /**
@@ -822,8 +873,7 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
             instrlist_meta_preinsert(bb, where, instr);
         }
 
-        /* Insert faulty instruction here */
-
+        /* Insert new case handling here */
         instr = INSTR_CREATE_mov_imm(drcontext, scratch_reg_opnd,
                 opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
         instrlist_meta_preinsert(bb, where, instr);
@@ -1308,6 +1358,12 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
 
         /* We make use of three slots for spillage */
         dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 4, 0);
+
+#ifdef ENABLE_STATS
+        case_num = dr_global_alloc(sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
+        memset(case_num, 0, sizeof(unsigned long) * (opts.fp_settings.dup_limit+ 1));
+#endif
+
     }
 
     drbbdup_ref_count++;
@@ -1348,7 +1404,109 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 
 #ifdef ENABLE_STATS
         drbbdup_stat_print_stats();
+
+        dr_global_free(case_num, sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1 ));
 #endif
+
     }
     return DRBBDUP_SUCCESS;
 }
+
+/***********************************************************************************
+ * STAT Functions
+ */
+
+#ifdef ENABLE_STATS
+
+/**
+ * Clean Calls for tracking. I keep things simple and use clean calls.
+ *
+ * Of course, these clean calls are not executed in release.
+ */
+
+static void drbbdup_stat_inc_bb() {
+    total_bb++;
+}
+
+static void drbbdup_stat_inc_instrum_bb() {
+    bb_instrumented++;
+}
+
+static void drbbdup_stat_inc_non_applicable() {
+
+    non_applicable++;
+}
+
+static void drbbdup_stat_no_fp() {
+
+    no_fp++;
+}
+
+static void drbbdup_stat_inc_gen() {
+
+    gen_num++;
+}
+
+static void drbbdup_stat_inc_bb_size(uint size) {
+
+    total_size += size;
+}
+
+static void clean_call_case_entry(int i) {
+    DR_ASSERT(i >= 0 && i < opts.fp_settings.dup_limit +1);
+    case_num[i]++;
+}
+
+static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
+        instr_t *where, int case_index) {
+
+    dr_insert_clean_call(drcontext, bb, where, clean_call_case_entry, false, 1,
+    OPND_CREATE_INTPTR(case_index));
+}
+
+static void clean_call_bail_entry() {
+    total_bails++;
+}
+
+static void drbbdup_stat_clean_bail_entry(void *drcontext, instrlist_t *bb,
+        instr_t *where) {
+
+    dr_insert_clean_call(drcontext, bb, where, clean_call_bail_entry, false, 0);
+}
+
+static void clean_call_bb_execc() {
+    total_exec++;
+}
+
+static void drbbdup_stat_clean_bb_exec(void *drcontext, instrlist_t *bb,
+        instr_t *where) {
+
+    dr_insert_clean_call(drcontext, bb, where, clean_call_bb_execc, false, 0);
+}
+
+static void drbbdup_stat_print_stats() {
+
+    dr_fprintf(STDERR, "---------------------------\n");
+
+    dr_fprintf(STDERR, "Total BB: %lu\n", total_bb);
+    dr_fprintf(STDERR, "Total Skipped: %lu\n", non_applicable);
+    dr_fprintf(STDERR, "Total BB with no Dynamic FP: %lu\n", no_fp);
+    dr_fprintf(STDERR, "Number of BB instrumented: %lu\n", bb_instrumented);
+
+    if (bb_instrumented != 0)
+        dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
+                total_size / bb_instrumented);
+
+    dr_fprintf(STDERR, "Number of faults (bb): %lu\n", gen_num);
+    dr_fprintf(STDERR, "Total bb exec: %lu\n", total_exec);
+    dr_fprintf(STDERR, "Total bails: %lu\n", total_bails);
+
+    for (int i = 0; i < opts.fp_settings.dup_limit; i++)
+        dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
+
+    dr_fprintf(STDERR, "---------------------------\n");
+
+}
+#endif
+
+

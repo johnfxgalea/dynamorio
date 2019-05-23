@@ -41,7 +41,6 @@ set(DynamoRIO_USE_LIBC OFF)
 
 set(srcs
   drbbdup.c
-  drbbdup_stat.c
   # add more here
   )
 
