@@ -1501,7 +1501,7 @@ static void drbbdup_stat_print_stats() {
     dr_fprintf(STDERR, "Total bb exec: %lu\n", total_exec);
     dr_fprintf(STDERR, "Total bails: %lu\n", total_bails);
 
-    for (int i = 0; i < opts.fp_settings.dup_limit; i++)
+    for (int i = 0; i < opts.fp_settings.dup_limit + 1; i++)
         dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
 
     dr_fprintf(STDERR, "---------------------------\n");
