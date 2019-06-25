@@ -276,6 +276,8 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     instr_t *first = instrlist_first(bb);
     if (instr_is_syscall(first) || instr_is_cti(first) || instr_is_ubr(first)) {
 
+        dr_fprintf(STDERR, "FAILED PC is %p\n", pc);
+
         DR_ASSERT(manager == NULL);
 #ifdef ENABLE_STATS
         if (!translating)
@@ -1230,6 +1232,19 @@ static void destroy_fp_cache(app_pc cache_pc){
     dr_nonheap_free(cache_pc, dr_page_size());
 }
 
+
+
+/***********************************************************************
+ * Frag Deletion
+ */
+
+static void deleted_frag(void *drcontext, void *tag){
+
+    app_pc bb_pc = dr_fragment_app_pc(tag);
+    dr_fprintf(STDERR, "The deleted frag is %p\n", bb_pc);
+
+}
+
 /************************************************************************
  * INIT
  */
@@ -1378,6 +1393,10 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
         if (!drmgr_register_thread_init_event(drbbdup_thread_init)
                 || !drmgr_register_thread_exit_event(drbbdup_thread_exit))
             return DRBBDUP_ERROR;
+
+
+        dr_register_delete_event(deleted_frag);
+
 
         tls_idx = drmgr_register_tls_field();
         if (tls_idx == -1)
