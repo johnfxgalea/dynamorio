@@ -556,6 +556,7 @@ static void print_bb(instr_t *strt, instrlist_t *bb){
     while (instr){
         instr_disassemble(dr_get_current_drcontext(), instr, STDERR);
         dr_fprintf(STDERR, "\n");
+        instr = instr_get_next(instr);
     }
     dr_fprintf(STDERR, "---------------------------\n");
 
