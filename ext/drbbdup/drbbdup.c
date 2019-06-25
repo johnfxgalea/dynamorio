@@ -253,6 +253,17 @@ static void drbbdup_add_dup(void *drcontext, instrlist_t *bb,
 static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         instrlist_t *bb, bool for_trace, bool translating) {
 
+
+    /* Use the PC of the fragment as the key */
+    app_pc pc = dr_fragment_app_pc(tag);
+
+    drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
+            drcontext, tls_idx);
+
+    /* Fetch new case manager */
+    drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+            &(pt->case_manager_table), pc);
+
 #ifdef ENABLE_STATS
     if (!translating)
     drbbdup_stat_inc_bb();
@@ -265,6 +276,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     instr_t *first = instrlist_first(bb);
     if (instr_is_syscall(first) || instr_is_cti(first) || instr_is_ubr(first)) {
 
+        DR_ASSERT(manager == NULL);
 #ifdef ENABLE_STATS
         if (!translating)
         drbbdup_stat_inc_non_applicable();
@@ -289,6 +301,8 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         if (!translating)
         drbbdup_stat_inc_non_applicable();
 #endif
+
+        DR_ASSERT(manager == NULL);
         /** Too small. **/
         return DR_EMIT_DEFAULT;
     }
@@ -340,15 +354,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         instr_destroy(drcontext, last);
     }
 
-    /* Use the PC of the fragment as the key */
-    app_pc pc = dr_fragment_app_pc(tag);
-
-    drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
-            drcontext, tls_idx);
-
-    /* Fetch new case manager */
-    drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-            &(pt->case_manager_table), pc);
 
     if (manager == NULL) {
         /* If manager is not available, we need to create a default one */
