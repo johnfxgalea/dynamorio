@@ -544,6 +544,23 @@ drbbdup_derive_case_bb(void *drcontext, instrlist_t *bb, instr_t **start) {
     return case_bb;
 }
 
+static void print_bb(instr_t *strt, instrlist_t *bb){
+
+    dr_fprintf(STDERR, "The start of the bb is:\n");
+    instr_disassemble(dr_get_current_drcontext(), strt, STDERR);
+    dr_fprintf(STDERR, "\n");
+
+    instr_t *instr = instrlist_first(bb);
+
+    dr_fprintf(STDERR, "---------------------------\n");
+    while (instr){
+        instr_disassemble(dr_get_current_drcontext(), instr, STDERR);
+        dr_fprintf(STDERR, "\n");
+    }
+    dr_fprintf(STDERR, "---------------------------\n");
+
+}
+
 static void drbbdup_handle_pre_analysis(void *drcontext, instrlist_t *bb,
         instr_t *strt, drbbdup_manager_t *manager, void **pre_analysis_data) {
 
@@ -557,6 +574,10 @@ static void drbbdup_handle_pre_analysis(void *drcontext, instrlist_t *bb,
      */
     if (!opts.functions.pre_analyse_bb)
         return;
+
+    if (instr_get_note(strt) != (void * )DRBBDUP_LABEL_NORMAL){
+        print_bb(strt, bb);
+    }
 
     DR_ASSERT(instr_get_note(strt) == (void * )DRBBDUP_LABEL_NORMAL);
     strt = instr_get_next(strt);
