@@ -53,6 +53,7 @@ typedef struct {
 } drbbdup_case_t;
 
 typedef struct {
+    int ref_counter;
     drbbdup_case_t default_case;
     drbbdup_case_t *cases;
     bool is_eflag_dead;
@@ -394,7 +395,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
         manager->default_case.is_defined = true;
         manager->default_case.condition_val = default_case_val;
-
+        manager->ref_counter = 1;
         hashtable_add(&(pt->case_manager_table), pc, manager);
     }
 
@@ -1165,8 +1166,8 @@ static void drbbdup_handle_new_case() {
      * for our new case which is tracked by the manager.
      */
 
-
-
+    /* Increment now, otherwise our delete fragment event will remove the manager */
+    manager->ref_counter++;
     bool succ = dr_delete_fragment(drcontext, tag);
     DR_ASSERT(succ);
 
@@ -1241,9 +1242,28 @@ static void destroy_fp_cache(app_pc cache_pc){
 
 static void deleted_frag(void *drcontext, void *tag){
 
-    app_pc bb_pc = dr_fragment_app_pc(tag);
-    dr_fprintf(STDERR, "The deleted frag is %p\n", bb_pc);
+    if (drcontext == NULL)
+        return;
 
+    drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
+            drcontext, tls_idx);
+
+    app_pc bb_pc = dr_fragment_app_pc(tag);
+
+    drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+            &(pt->case_manager_table), bb_pc);
+
+    if (manager){
+
+        DR_ASSERT(manager->ref_counter > 0);
+        manager->ref_counter--;
+
+        if (manager->ref_counter <= 0){
+            bool is_removed =
+            hashtable_remove( &(pt->case_manager_table), bb_pc);
+            DR_ASSERT(is_removed);
+        }
+    }
 }
 
 /************************************************************************
