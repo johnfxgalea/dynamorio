@@ -36,7 +36,7 @@
 #define DRBBDUP_HIT_TABLE_SLOT 3
 
 // Comment out macro for no stats
-//#define ENABLE_STATS 1
+#define ENABLE_STATS 1
 
 /*************************************************************************
  * Structs
@@ -53,6 +53,7 @@ typedef struct {
 } drbbdup_case_t;
 
 typedef struct {
+    int fp_flag;
     int ref_counter;
     drbbdup_case_t default_case;
     drbbdup_case_t *cases;
@@ -397,7 +398,14 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         manager->default_case.condition_val = default_case_val;
         manager->ref_counter = 1;
         hashtable_add(&(pt->case_manager_table), pc, manager);
+    }else{
+
+        if (!translating && !manager->fp_flag){
+            manager->ref_counter++;
+        }
     }
+
+    manager->fp_flag = false;
 
     DR_ASSERT(manager != NULL);
 
@@ -1168,6 +1176,8 @@ static void drbbdup_handle_new_case() {
 
     /* Increment now, otherwise our delete fragment event will remove the manager */
     manager->ref_counter++;
+    manager->fp_flag = true;
+
     bool succ = dr_delete_fragment(drcontext, tag);
     DR_ASSERT(succ);
 
