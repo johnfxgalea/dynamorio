@@ -18,6 +18,8 @@
 #include <signal.h>
 #include "../ext_utils.h"
 
+#include <sys/time.h>
+
 #ifdef DEBUG
 #    define ASSERT(x, msg) DR_ASSERT_MSG(x, msg)
 #    define LOG(dc, mask, level, ...) dr_log(dc, mask, level, __VA_ARGS__)
@@ -36,7 +38,7 @@
 #define DRBBDUP_HIT_TABLE_SLOT 3
 
 // Comment out macro for no stats
-//#define ENABLE_STATS 1
+#define ENABLE_STATS 1
 
 /*************************************************************************
  * Structs
@@ -128,25 +130,30 @@ static void drbbdup_stat_clean_bb_exec(void *drcontext, instrlist_t *bb,
         instr_t *where);
 static void drbbdup_stat_print_stats();
 
+static void sample_thread(void *arg);
+
 /** Total number of BB witnessed.**/
-unsigned long total_bb = 0;
+static unsigned long total_bb = 0;
 /** Total number of BBs with fast path generation. **/
-unsigned long bb_instrumented = 0;
+static unsigned long bb_instrumented = 0;
 /** Total size of basic blocks (used for avg). **/
-unsigned long total_size = 0;
+static unsigned long total_size = 0;
 /** Number of non applicable bbs **/
-unsigned long non_applicable = 0;
+static unsigned long non_applicable = 0;
 /** Number of bbs with no dynamic fp **/
-unsigned long no_fp = 0;
+static unsigned long no_fp = 0;
 /** Total number of BB executed with faths paths **/
-unsigned long total_exec = 0;
+static unsigned long total_exec = 0;
 /** Number of fast paths generated (faults triggered) **/
-unsigned long gen_num = 0;
+static unsigned long gen_num = 0;
 /** Number of bails to slow path**/
-unsigned long total_bails = 0;
+static unsigned long total_bails = 0;
 
 /** Number of case entries **/
-unsigned long *case_num = NULL;
+static unsigned long *case_num = NULL;
+
+static unsigned long prev_full_taint_num = 0;
+static unsigned long prev_fp_gen = 0;
 
 #endif
 
@@ -265,7 +272,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-    drbbdup_stat_inc_bb();
+        drbbdup_stat_inc_bb();
 #endif
 
     /* If the first instruction is a branch statement, we simply return.
@@ -281,7 +288,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         DR_ASSERT(manager == NULL);
 #ifdef ENABLE_STATS
         if (!translating)
-        drbbdup_stat_inc_non_applicable();
+            drbbdup_stat_inc_non_applicable();
 #endif
         return DR_EMIT_DEFAULT;
     }
@@ -301,7 +308,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
         if (!translating)
-        drbbdup_stat_inc_non_applicable();
+            drbbdup_stat_inc_non_applicable();
 #endif
 
         DR_ASSERT(manager == NULL);
@@ -311,7 +318,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-    drbbdup_stat_inc_bb_size(cur_size);
+        drbbdup_stat_inc_bb_size(cur_size);
 #endif
 
     /* Example:
@@ -378,7 +385,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
             /** The users doesn't want fast path for this bb. **/
 #ifdef ENABLE_STATS
             if (!translating)
-            drbbdup_stat_inc_non_applicable();
+                drbbdup_stat_inc_non_applicable();
 #endif
 
             instrlist_clear_and_destroy(drcontext, original);
@@ -408,13 +415,13 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-    drbbdup_stat_inc_instrum_bb();
+        drbbdup_stat_inc_instrum_bb();
 #endif
 
 #ifdef ENABLE_STATS
     if (!manager->manager_opts.enable_dynamic_fp)
-    if (!translating)
-    drbbdup_stat_no_fp();
+        if (!translating)
+            drbbdup_stat_no_fp();
 #endif
 
     /**
@@ -477,7 +484,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         instrlist_meta_postinsert(bb, instrlist_last(bb), exit_label);
     }
 
-    return DR_EMIT_DEFAULT;
+    return DR_EMIT_STORE_TRANSLATIONS;
 }
 
 /************************************************************************
@@ -1409,8 +1416,12 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
         dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 4, 0);
 
 #ifdef ENABLE_STATS
-        case_num = dr_global_alloc(sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
-        memset(case_num, 0, sizeof(unsigned long) * (opts.fp_settings.dup_limit+ 1));
+        case_num = dr_global_alloc(
+                sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
+        memset(case_num, 0,
+                sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
+
+        dr_create_client_thread(sample_thread, NULL);
 #endif
 
     }
@@ -1452,7 +1463,8 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 #ifdef ENABLE_STATS
         drbbdup_stat_print_stats();
 
-        dr_global_free(case_num, sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1 ));
+        dr_global_free(case_num,
+                sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
 #endif
 
     }
@@ -1500,7 +1512,7 @@ static void drbbdup_stat_inc_bb_size(uint size) {
 }
 
 static void clean_call_case_entry(int i) {
-    DR_ASSERT(i >= 0 && i < opts.fp_settings.dup_limit +1);
+    DR_ASSERT(i >= 0 && i < opts.fp_settings.dup_limit + 1);
     case_num[i]++;
 }
 
@@ -1508,7 +1520,7 @@ static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
         instr_t *where, int case_index) {
 
     dr_insert_clean_call(drcontext, bb, where, clean_call_case_entry, false, 1,
-            OPND_CREATE_INTPTR(case_index));
+    OPND_CREATE_INTPTR(case_index));
 }
 
 static void clean_call_bail_entry() {
@@ -1541,18 +1553,40 @@ static void drbbdup_stat_print_stats() {
     dr_fprintf(STDERR, "Number of BB instrumented: %lu\n", bb_instrumented);
 
     if (bb_instrumented != 0)
-    dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
-            total_size / bb_instrumented);
+        dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
+                total_size / bb_instrumented);
 
-    dr_fprintf(STDERR, "Number of faults (bb): %lu\n", gen_num);
+    dr_fprintf(STDERR, "Number of fast paths generated (bb): %lu\n", gen_num);
     dr_fprintf(STDERR, "Total bb exec: %lu\n", total_exec);
     dr_fprintf(STDERR, "Total bails: %lu\n", total_bails);
 
     for (int i = 0; i < opts.fp_settings.dup_limit + 1; i++)
-    dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
+        dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
 
     dr_fprintf(STDERR, "---------------------------\n");
 
 }
+
+void record_sample(void *drcontext, dr_mcontext_t *mcontext) {
+
+    unsigned long new_full_taint_num = case_num[0] - prev_full_taint_num;
+    unsigned long new_fp_gen = gen_num - prev_fp_gen;
+
+    prev_full_taint_num = case_num[0];
+    prev_fp_gen = gen_num;
+
+    dr_fprintf(STDERR, "Im inside timer %lu %lu!\n", new_full_taint_num,
+            new_fp_gen);
+}
+
+static void sample_thread(void *arg) {
+
+    dr_set_itimer(ITIMER_REAL, 1000, record_sample);
+
+    while (1) {
+        dr_thread_yield();
+    }
+}
+
 #endif
 
