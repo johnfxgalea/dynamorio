@@ -38,7 +38,7 @@
 #define DRBBDUP_HIT_TABLE_SLOT 3
 
 // Comment out macro for no stats
-#define ENABLE_STATS 1
+//#define ENABLE_STATS 1
 
 /*************************************************************************
  * Structs
@@ -266,13 +266,16 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
             drcontext, tls_idx);
 
+    if (translating)
+        return DR_EMIT_DEFAULT;
+
     /* Fetch new case manager */
     drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
             &(pt->case_manager_table), pc);
 
 #ifdef ENABLE_STATS
     if (!translating)
-        drbbdup_stat_inc_bb();
+    drbbdup_stat_inc_bb();
 #endif
 
     /* If the first instruction is a branch statement, we simply return.
@@ -288,7 +291,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         DR_ASSERT(manager == NULL);
 #ifdef ENABLE_STATS
         if (!translating)
-            drbbdup_stat_inc_non_applicable();
+        drbbdup_stat_inc_non_applicable();
 #endif
         return DR_EMIT_DEFAULT;
     }
@@ -308,7 +311,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
         if (!translating)
-            drbbdup_stat_inc_non_applicable();
+        drbbdup_stat_inc_non_applicable();
 #endif
 
         DR_ASSERT(manager == NULL);
@@ -318,7 +321,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-        drbbdup_stat_inc_bb_size(cur_size);
+    drbbdup_stat_inc_bb_size(cur_size);
 #endif
 
     /* Example:
@@ -384,8 +387,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         if (!consider) {
             /** The users doesn't want fast path for this bb. **/
 #ifdef ENABLE_STATS
-            if (!translating)
-                drbbdup_stat_inc_non_applicable();
+            drbbdup_stat_inc_non_applicable();
 #endif
 
             instrlist_clear_and_destroy(drcontext, original);
@@ -404,8 +406,11 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
     } else {
 
-        if (!translating && !manager->fp_flag) {
-            manager->ref_counter++;
+        if (!translating) {
+            if (!translating && !manager->fp_flag) {
+                manager->ref_counter++;
+            }
+
         }
     }
 
@@ -415,13 +420,13 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-        drbbdup_stat_inc_instrum_bb();
+    drbbdup_stat_inc_instrum_bb();
 #endif
 
 #ifdef ENABLE_STATS
     if (!manager->manager_opts.enable_dynamic_fp)
-        if (!translating)
-            drbbdup_stat_no_fp();
+    if (!translating)
+    drbbdup_stat_no_fp();
 #endif
 
     /**
@@ -1520,7 +1525,7 @@ static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
         instr_t *where, int case_index) {
 
     dr_insert_clean_call(drcontext, bb, where, clean_call_case_entry, false, 1,
-    OPND_CREATE_INTPTR(case_index));
+            OPND_CREATE_INTPTR(case_index));
 }
 
 static void clean_call_bail_entry() {
@@ -1553,15 +1558,15 @@ static void drbbdup_stat_print_stats() {
     dr_fprintf(STDERR, "Number of BB instrumented: %lu\n", bb_instrumented);
 
     if (bb_instrumented != 0)
-        dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
-                total_size / bb_instrumented);
+    dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
+            total_size / bb_instrumented);
 
     dr_fprintf(STDERR, "Number of fast paths generated (bb): %lu\n", gen_num);
     dr_fprintf(STDERR, "Total bb exec: %lu\n", total_exec);
     dr_fprintf(STDERR, "Total bails: %lu\n", total_bails);
 
     for (int i = 0; i < opts.fp_settings.dup_limit + 1; i++)
-        dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
+    dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
 
     dr_fprintf(STDERR, "---------------------------\n");
 
