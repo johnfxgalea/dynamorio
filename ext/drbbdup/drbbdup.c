@@ -983,6 +983,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
         } else if (result && label_info == DRBBDUP_LABEL_EXIT) {
             DR_ASSERT(pt->case_index >= 0);
 
+            /* Set to -1 to always trigger default behaviour. */
             pt->case_index = -1;
             drreg_restore_all_now(drcontext, bb, instr);
 
@@ -1249,9 +1250,8 @@ static void destroy_fp_cache(app_pc cache_pc) {
 
 static void deleted_frag(void *drcontext, void *tag) {
 
-    if (drcontext == NULL) {
+    if (drcontext == NULL)
         return;
-    }
 
     drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
             drcontext, tls_idx);
@@ -1474,6 +1474,8 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 
         dr_raw_tls_cfree(tls_raw_base, 4);
         drmgr_unregister_tls_field(tls_idx);
+
+        dr_unregister_delete_event(deleted_frag);
 
         drreg_exit();
 
