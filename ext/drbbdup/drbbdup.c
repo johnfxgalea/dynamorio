@@ -424,9 +424,10 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 #endif
 
 #ifdef ENABLE_STATS
-    if (!manager->manager_opts.enable_dynamic_fp)
-    if (!translating)
-    drbbdup_stat_no_fp();
+    if (!manager->manager_opts.enable_dynamic_fp) {
+        if (!translating)
+        drbbdup_stat_no_fp();
+    }
 #endif
 
     /**
@@ -1162,10 +1163,19 @@ static void drbbdup_handle_new_case() {
      */
 
     /* Increment now, otherwise our delete fragment event will remove the manager */
+
+    int prev_counter = manager->ref_counter;
+    int prev_fp_flag = manager->fp_flag;
+
     manager->ref_counter++;
     manager->fp_flag = true;
 
     bool succ = dr_delete_fragment(drcontext, tag);
+
+    if (!succ) {
+        dr_fprintf(STDERR, "FAILED: %d %d\n", prev_counter,
+                prev_fp_flag != false);
+    }
     DR_ASSERT(succ);
 
     if (!manager->is_eflag_dead) {
@@ -1190,7 +1200,8 @@ static void drbbdup_handle_new_case() {
 
     mcontext.pc = bb_pc;
 
-    dr_redirect_execution(&mcontext);
+    bool redirected = dr_redirect_execution(&mcontext);
+    DR_ASSERT(redirected);
 }
 
 static app_pc init_fp_cache() {
@@ -1238,8 +1249,9 @@ static void destroy_fp_cache(app_pc cache_pc) {
 
 static void deleted_frag(void *drcontext, void *tag) {
 
-    if (drcontext == NULL)
+    if (drcontext == NULL) {
         return;
+    }
 
     drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
             drcontext, tls_idx);
