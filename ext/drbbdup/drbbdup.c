@@ -1474,9 +1474,7 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 
         dr_raw_tls_cfree(tls_raw_base, 4);
         drmgr_unregister_tls_field(tls_idx);
-
         dr_unregister_delete_event(deleted_frag);
-
         drreg_exit();
 
 #ifdef ENABLE_STATS
