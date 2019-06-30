@@ -1193,9 +1193,6 @@ vmm_heap_reserve(size_t size, heap_error_code_t *error_code, bool executable,
                 /* FIXME - for our testing would be nice to have some release build
                  * notification of this ... */
             });
-#ifdef CLIENT_INTERFACE
-            instrument_low_on_memory();
-#endif
             DODEBUG(ever_beyond_vmm = true;);
 #ifdef X64
             /* PR 215395, make sure allocation satisfies heap reachability contraints */
