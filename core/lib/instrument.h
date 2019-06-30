@@ -210,6 +210,9 @@ bool
 instrument_persist_patch(dcontext_t *dcontext, void *perscxt, byte *bb_start,
                          size_t bb_size);
 
+void
+instrument_low_on_memory();
+
 #endif /* CLIENT_INTERFACE */
 
 #endif /* _INSTRUMENT_H_ */

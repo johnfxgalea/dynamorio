@@ -703,6 +703,30 @@ DR_EXPORT
 void *
 drmgr_get_parent_cls_field(void *drcontext, int idx);
 
+DR_EXPORT
+bool
+drmgr_register_low_on_memory_event(void (*func)(void *drcontext));
+
+DR_EXPORT
+bool
+drmgr_register_low_on_memory_event_ex(void (*func)(void *drcontext),
+                               drmgr_priority_t *priority);
+
+DR_EXPORT
+bool
+drmgr_register_low_on_memory_event_user_data(void (*func)(void *drcontext,
+                                                          void *user_data),
+                                      drmgr_priority_t *priority, void *user_data);
+
+DR_EXPORT
+bool
+drmgr_unregister_low_on_memory_event(void (*func) (void *drcontext));
+
+DR_EXPORT
+bool
+drmgr_unregister_low_on_memory_event_user_data(void (*func)(void *drcontext,
+                                                            void *user_data));
+
 /***************************************************************************
  * INSTRUCTION NOTE FIELD
  */

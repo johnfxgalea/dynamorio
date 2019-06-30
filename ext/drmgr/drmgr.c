@@ -68,6 +68,8 @@
 #undef dr_unregister_exception_event
 #undef dr_register_restore_state_ex_event
 #undef dr_unregister_restore_state_ex_event
+#undef dr_register_low_on_memory_event
+#undef dr_unregister_low_on_memory_event
 
 /* currently using asserts on internal logic sanity checks (never on
  * input from user) but perhaps we shouldn't since this is a library
@@ -136,6 +138,10 @@ typedef struct _generic_event_entry_t {
             void (*cb_user_data)(void *, const module_data_t *, bool, void *);
         } modload_cb;
         union {
+            void (*cb_no_user_data)(void *);
+            void (*cb_user_data)(void *, void *);
+        } low_on_memory_cb;
+        union {
             void (*cb_no_user_data)(void *, const module_data_t *);
             void (*cb_user_data)(void *, const module_data_t *, void *);
         } modunload_cb;
@@ -152,6 +158,7 @@ typedef struct _generic_event_entry_t {
         void (*fault_cb)(void *, void *, dr_mcontext_t *, bool, bool);
         bool (*fault_ex_cb)(void *, bool, dr_restore_state_info_t *);
     } cb;
+
 } generic_event_entry_t;
 
 /* array of events */
@@ -298,6 +305,9 @@ static cb_list_t cblist_fault;
 static void *fault_event_lock;
 static bool registered_fault; /* for lazy registration */
 
+static cb_list_t cblist_low_on_memory;
+static void *low_on_memory_event_lock;
+
 static void
 drmgr_thread_init_event(void *drcontext);
 
@@ -351,6 +361,9 @@ our_thread_init_event(void *drcontext);
 static void
 our_thread_exit_event(void *drcontext);
 
+static void
+drmgr_low_on_memory_event(void *drcontext);
+
 /***************************************************************************
  * INIT
  */
@@ -384,12 +397,15 @@ drmgr_init(void)
     exception_event_lock = dr_rwlock_create();
 #endif
     fault_event_lock = dr_rwlock_create();
+    low_on_memory_event_lock = dr_rwlock_create();
 
     dr_register_thread_init_event(drmgr_thread_init_event);
     dr_register_thread_exit_event(drmgr_thread_exit_event);
     dr_register_module_load_event(drmgr_modload_event);
     dr_register_module_unload_event(drmgr_modunload_event);
     dr_register_kernel_xfer_event(drmgr_kernel_xfer_event);
+    dr_register_low_on_memory_event(drmgr_low_on_memory_event);
+
 #ifdef UNIX
     dr_register_signal_event(drmgr_signal_event);
 #endif
@@ -435,6 +451,8 @@ drmgr_exit(void)
     dr_unregister_module_load_event(drmgr_modload_event);
     dr_unregister_module_unload_event(drmgr_modunload_event);
     dr_unregister_kernel_xfer_event(drmgr_kernel_xfer_event);
+    dr_unregister_low_on_memory_event(drmgr_low_on_memory_event);
+
 #ifdef UNIX
     dr_unregister_signal_event(drmgr_signal_event);
 #endif
@@ -470,6 +488,7 @@ drmgr_exit(void)
     dr_mutex_destroy(tls_lock);
     dr_rwlock_destroy(thread_event_lock);
     dr_rwlock_destroy(bb_cb_lock);
+    dr_rwlock_destroy(low_on_memory_event_lock);
 
     dr_mutex_destroy(note_lock);
 }
@@ -1303,6 +1322,8 @@ drmgr_event_init(void)
     cblist_init(&cblist_exception, sizeof(generic_event_entry_t));
 #endif
     cblist_init(&cblist_fault, sizeof(generic_event_entry_t));
+    cblist_init(&cblist_low_on_memory, sizeof(generic_event_entry_t));
+
 }
 
 static void
@@ -1328,6 +1349,8 @@ drmgr_event_exit(void)
     cblist_delete(&cblist_exception);
 #endif
     cblist_delete(&cblist_fault);
+    cblist_delete(&cblist_low_on_memory);
+
 }
 
 DR_EXPORT
@@ -2504,6 +2527,87 @@ bool
 drmgr_pop_cls(void *drcontext)
 {
     return drmgr_cls_stack_pop();
+}
+
+/***************************************************************************
+ * WRAPPED LOW ON MEMORY EVENTS
+ */
+
+DR_EXPORT
+/* clang-format off */ /* (work around clang-format newline-after-type bug) */
+bool
+drmgr_register_low_on_memory_event(void (*func)(void *drcontext))
+/* clang-format on */
+{
+    return drmgr_generic_event_add(&cblist_low_on_memory, low_on_memory_event_lock,
+                                   (void (*)(void))func, NULL, false, NULL);
+}
+
+DR_EXPORT
+bool
+drmgr_register_low_on_memory_event_ex(void (*func)(void *drcontext),
+                               drmgr_priority_t *priority)
+{
+    return drmgr_generic_event_add(&cblist_low_on_memory, low_on_memory_event_lock,
+                                   (void (*)(void))func, priority, false, NULL);
+}
+
+DR_EXPORT
+bool
+drmgr_register_low_on_memory_event_user_data(void (*func)(void *drcontext,
+                                                          void *user_data),
+                                      drmgr_priority_t *priority, void *user_data)
+{
+    return drmgr_generic_event_add(&cblist_low_on_memory, low_on_memory_event_lock,
+                                   (void (*)(void))func, priority, true, user_data);
+}
+
+DR_EXPORT
+/* clang-format off */ /* (work around clang-format newline-after-type bug) */
+bool
+drmgr_unregister_low_on_memory_event(void (*func) (void *drcontext))
+/* clang-format on */
+{
+    return drmgr_generic_event_remove(&cblist_low_on_memory, low_on_memory_event_lock,
+                                      (void (*)(void))func);
+}
+
+DR_EXPORT
+/* clang-format off */ /* (work around clang-format newline-after-type bug) */
+bool
+drmgr_unregister_low_on_memory_event_user_data(void (*func)(void *drcontext,
+                                                            void *user_data))
+/* clang-format on */
+{
+    return drmgr_generic_event_remove(&cblist_low_on_memory, low_on_memory_event_lock,
+                                      (void (*)(void))func);
+}
+
+static void drmgr_low_on_memory_event(void *drcontext){
+
+    generic_event_entry_t local[EVENTS_STACK_SZ];
+    cb_list_t iter;
+    uint i;
+    dr_rwlock_read_lock(low_on_memory_event_lock);
+    cblist_create_local(drcontext, &cblist_low_on_memory, &iter, (byte *)local,
+                        BUFFER_SIZE_ELEMENTS(local));
+    dr_rwlock_read_unlock(low_on_memory_event_lock);
+
+    for (i = 0; i < iter.num_def; i++) {
+        if (!iter.cbs.generic[i].pri.valid)
+            continue;
+
+        bool is_using_user_data = iter.cbs.generic[i].is_using_user_data;
+        void *user_data = iter.cbs.generic[i].user_data;
+        /* follow DR semantics: short-circuit on first handler to "own" the signal */
+        if (is_using_user_data == false) {
+            (*iter.cbs.generic[i].cb.low_on_memory_cb.cb_no_user_data)(drcontext);
+        } else {
+            (*iter.cbs.generic[i].cb.low_on_memory_cb.cb_user_data)(drcontext,
+                                                                   user_data);
+        }
+    }
+    cblist_delete_local(drcontext, &iter, BUFFER_SIZE_ELEMENTS(local));
 }
 
 /***************************************************************************

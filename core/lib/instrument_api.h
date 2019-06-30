@@ -6698,4 +6698,21 @@ dr_unregister_persist_patch(bool (*func_patch)(void *drcontext, void *perscxt,
                                                byte *bb_start, size_t bb_size,
                                                void *user_data));
 
+DR_API
+/**
+ * Registers a callback function for the low on memory event.  DR calls \p func
+ * whenever virtual memory is tight and enables the client to help free space.
+ */
+void
+dr_register_low_on_memory_event(void (*func)(void *drcontext));
+
+DR_API
+/**
+ * Unregister a callback function for low on memory events.
+ * \return true if unregistration is successful and false if it is not
+ * (e.g., the function was not registered).
+ */
+bool
+dr_unregister_low_on_memory_event(void (*func)(void *drcontext));
+
 #endif /* _INSTRUMENT_API_H_ */

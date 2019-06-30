@@ -290,6 +290,9 @@ static callback_list_t resurrect_rw_callbacks = {
 static callback_list_t persist_patch_callbacks = {
     0,
 };
+static callback_list_t low_on_memory_callbacks = {
+    0,
+};
 
 /* An array of client libraries.  We use a static array instead of a
  * heap-allocated list so we can load the client libs before
@@ -7992,5 +7995,26 @@ dr_unregister_persist_patch(bool (*func_patch)(void *drcontext, void *perscxt,
 {
     return remove_callback(&persist_patch_callbacks, (void (*)(void))func_patch, true);
 }
+
+void
+instrument_low_on_memory()
+{
+    dcontext_t *dcontext = get_thread_private_dcontext();
+    call_all(low_on_memory_callbacks, int (*)(void *), (void *)dcontext);
+}
+
+void
+dr_register_low_on_memory_event(void (*func)(void *drcontext))
+{
+    add_callback(&low_on_memory_callbacks, (void (*)(void))func, true);
+}
+
+
+bool
+dr_unregister_low_on_memory_event(void (*func)(void *drcontext))
+{
+    return remove_callback(&low_on_memory_callbacks, (void (*)(void))func, true);
+}
+
 
 #endif /* CLIENT_INTERFACE */
