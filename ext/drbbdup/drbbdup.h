@@ -4,6 +4,7 @@
 #include "dr_api.h"
 #include "drmgr.h"
 #include "drvector.h"
+#include <stdint.h>
 
 /**
  * @file drbbdup.h
