@@ -38,7 +38,7 @@
 #define DRBBDUP_HIT_TABLE_SLOT 3
 
 // Comment out macro for no stats
-//#define ENABLE_STATS 1
+#define ENABLE_STATS 1
 
 /*************************************************************************
  * Structs
@@ -155,6 +155,8 @@ static unsigned long *case_num = NULL;
 
 static unsigned long prev_full_taint_num = 0;
 static unsigned long prev_fp_gen = 0;
+
+void *stat_mutex = NULL;
 
 #endif
 
@@ -1173,11 +1175,9 @@ static void drbbdup_handle_new_case() {
     manager->ref_counter++;
     manager->fp_flag = true;
 
-
     bool succ = dr_delete_fragment(drcontext, tag);
     if (!succ) {
-        dr_fprintf(STDERR, "FAILED: %d %d\n", prev_counter,
-                prev_fp_flag);
+        dr_fprintf(STDERR, "FAILED: %d %d\n", prev_counter, prev_fp_flag);
     }
     DR_ASSERT(succ);
 
@@ -1440,6 +1440,8 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
         memset(case_num, 0,
                 sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
 
+        stat_mutex = dr_mutex_create();
+
         dr_create_client_thread(sample_thread, NULL);
 #endif
 
@@ -1482,10 +1484,10 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 #ifdef ENABLE_STATS
         drbbdup_stat_print_stats();
 
+        dr_mutex_destroy(stat_mutex);
         dr_global_free(case_num,
                 sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
 #endif
-
     }
     return DRBBDUP_SUCCESS;
 }
@@ -1503,36 +1505,54 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
  */
 
 static void drbbdup_stat_inc_bb() {
+
+    dr_mutex_lock(stat_mutex);
     total_bb++;
+    dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_inc_instrum_bb() {
+
+    dr_mutex_lock(stat_mutex);
     bb_instrumented++;
+    dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_inc_non_applicable() {
 
+    dr_mutex_lock(stat_mutex);
     non_applicable++;
+    dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_no_fp() {
 
+    dr_mutex_lock(stat_mutex);
     no_fp++;
+    dr_mutex_unlock(stat_mutex);
+
 }
 
 static void drbbdup_stat_inc_gen() {
 
+    dr_mutex_lock(stat_mutex);
     gen_num++;
+    dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_inc_bb_size(uint size) {
 
+    dr_mutex_lock(stat_mutex);
     total_size += size;
+    dr_mutex_unlock(stat_mutex);
 }
 
 static void clean_call_case_entry(int i) {
     DR_ASSERT(i >= 0 && i < opts.fp_settings.dup_limit + 1);
+
+    dr_mutex_lock(stat_mutex);
     case_num[i]++;
+    dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
@@ -1543,7 +1563,10 @@ static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
 }
 
 static void clean_call_bail_entry() {
+
+    dr_mutex_lock(stat_mutex);
     total_bails++;
+    dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_clean_bail_entry(void *drcontext, instrlist_t *bb,
@@ -1553,7 +1576,10 @@ static void drbbdup_stat_clean_bail_entry(void *drcontext, instrlist_t *bb,
 }
 
 static void clean_call_bb_execc() {
+
+    dr_mutex_lock(stat_mutex);
     total_exec++;
+    dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_clean_bb_exec(void *drcontext, instrlist_t *bb,
@@ -1586,16 +1612,30 @@ static void drbbdup_stat_print_stats() {
 
 }
 
+unsigned long sample_count = 0;
 void record_sample(void *drcontext, dr_mcontext_t *mcontext) {
 
-    unsigned long new_full_taint_num = case_num[0] - prev_full_taint_num;
+    dr_mutex_lock(stat_mutex);
+
+    unsigned long new_fp_taint_num = 0;
+    for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
+        new_fp_taint_num += case_num[i];
+
+    new_fp_taint_num = new_fp_taint_num - prev_full_taint_num;
     unsigned long new_fp_gen = gen_num - prev_fp_gen;
 
-    prev_full_taint_num = case_num[0];
+    for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
+        prev_full_taint_num += case_num[i];
+
     prev_fp_gen = gen_num;
 
-    dr_fprintf(STDERR, "Im inside timer %lu %lu!\n", new_full_taint_num,
-            new_fp_gen);
+    dr_fprintf(STDERR, "(%lu,%lu) (%lu,%lu)\n", sample_count, new_fp_taint_num,
+            sample_count, new_fp_gen);
+
+    dr_mutex_unlock(stat_mutex);
+
+    sample_count++;
+
 }
 
 static void sample_thread(void *arg) {
