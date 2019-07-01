@@ -80,7 +80,7 @@ typedef struct {
     int case_index;
     void *pre_analysis_data;
     void **instrum_infos;
-    uint hit_counts[HIT_COUNT_TABLE_SIZE];
+    uint8_t hit_counts[HIT_COUNT_TABLE_SIZE];
 
 } drbbdup_per_thread;
 

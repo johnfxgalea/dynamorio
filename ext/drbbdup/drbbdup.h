@@ -123,7 +123,7 @@ typedef struct {
 typedef struct {
 
     uint required_size;
-    uint hit_gen_threshold;
+    uint8_t hit_gen_threshold;
     int dup_limit;
 } drbbdup_fp_settings_t;
 
