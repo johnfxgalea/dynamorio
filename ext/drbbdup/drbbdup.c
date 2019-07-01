@@ -29,7 +29,7 @@
 #endif
 
 #define HASH_BIT_TABLE 8
-#define HIT_COUNT_TABLE_SIZE 16384
+#define HIT_COUNT_TABLE_SIZE 65536
 
 /* THREAD SLOTS */
 #define DRBBDUP_COMPARATOR_SLOT 0
@@ -887,8 +887,8 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
             instrlist_meta_preinsert(bb, where, instr);
 
             uint hash = drbbdup_get_hitcount_hash((intptr_t) translation);
-            opnd_t hit_count_opnd = OPND_CREATE_MEM32(DR_REG_XAX,
-                    hash * sizeof(uint));
+            opnd_t hit_count_opnd = OPND_CREATE_MEM8(DR_REG_XAX,
+                    hash * sizeof(uint8_t));
 
             /* Decrement hit counter */
             opnd = opnd_create_immed_int(1, OPSZ_1);
