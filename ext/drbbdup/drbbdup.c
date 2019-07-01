@@ -1624,6 +1624,7 @@ void record_sample(void *drcontext, dr_mcontext_t *mcontext) {
     new_fp_taint_num = new_fp_taint_num - prev_full_taint_num;
     unsigned long new_fp_gen = gen_num - prev_fp_gen;
 
+    prev_full_taint_num = 0;
     for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
         prev_full_taint_num += case_num[i];
 
