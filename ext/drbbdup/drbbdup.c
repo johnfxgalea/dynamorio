@@ -81,6 +81,7 @@ typedef struct {
     void *pre_analysis_data;
     void **instrum_infos;
     uint hit_counts[HIT_COUNT_TABLE_SIZE];
+
 } drbbdup_per_thread;
 
 /*************************************************************************
@@ -1168,14 +1169,15 @@ static void drbbdup_handle_new_case() {
     int prev_counter = manager->ref_counter;
     int prev_fp_flag = manager->fp_flag;
 
+    DR_ASSERT(!manager->fp_flag);
     manager->ref_counter++;
     manager->fp_flag = true;
 
-    bool succ = dr_delete_fragment(drcontext, tag);
 
+    bool succ = dr_delete_fragment(drcontext, tag);
     if (!succ) {
         dr_fprintf(STDERR, "FAILED: %d %d\n", prev_counter,
-                prev_fp_flag != false);
+                prev_fp_flag);
     }
     DR_ASSERT(succ);
 
