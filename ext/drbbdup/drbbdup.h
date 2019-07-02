@@ -46,6 +46,7 @@ typedef enum {
  */
 typedef struct {
     bool enable_dynamic_fp;
+    bool enable_pop_threshold;
     size_t max_pop_threshold;
 } drbbdup_manager_options_t;
 

@@ -38,7 +38,7 @@
 #define DRBBDUP_HIT_TABLE_SLOT 3
 
 // Comment out macro for no stats
-#define ENABLE_STATS 1
+//#define ENABLE_STATS 1
 
 /*************************************************************************
  * Structs
@@ -380,6 +380,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         DR_ASSERT(opts.functions.create_manager);
 
         manager->manager_opts.enable_dynamic_fp = true;
+        manager->manager_opts.enable_pop_threshold = false;
         manager->manager_opts.max_pop_threshold = 0;
         uint default_case_val = 0;
 
@@ -861,7 +862,7 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
 
         /* Check whether it is in bounds */
 
-        if (manager->manager_opts.max_pop_threshold > 0) {
+        if (manager->manager_opts.enable_pop_threshold) {
 
             instr = INSTR_CREATE_popcnt(drcontext, scratch_reg_opnd,
                     scratch_reg_opnd);
