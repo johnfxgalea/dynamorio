@@ -52,6 +52,7 @@ cmake_minimum_required(VERSION 2.8.11)
 include(../../make/policies.cmake NO_POLICY_SCOPE)
 
 option(TEST_LONG "run long set of tests")
+option(SKIP_FLAKY_TESTS "do not run tests named *_FLAKY")
 # if TEST_SUITE is off, we disable some flaky tests in order to have all
 # tests succeed (i#389).  TEST_SUITE is now a top-level option.
 set(TEST_SECONDS "90" CACHE STRING "Test time limit in seconds")
@@ -107,6 +108,8 @@ set(vmap_run_list
   "SHORT::ONLY::client.events$::-code_api -disable_traces"
   "SHORT::X86::ONLY::client.events$::-code_api -thread_private -disable_traces"
   "SHORT::X86::LIN::ONLY::client.events$::-code_api -no_early_inject" # only early on ARM
+  # XXX i#3556: NYI on Windows, Mac, and non-x86 (and not supported on 32-bit).
+  "SHORT::X86::X64::LIN::ONLY::drcache.*\\.simple$|selfmod2|racesys|reachability|fork$::-code_api -satisfy_w_xor_x"
   # maybe this should be SHORT as -coarse_units will eventually be the default?
   "X86::-code_api -opt_memory"       # i#1575: ARM -coarse_units NYI
   "X86::-code_api -opt_speed"        # i#1551: ARM indcall2direct NYI
@@ -236,6 +239,12 @@ if (WIN32)
   endif (BIND_EXECUTABLE)
   mark_as_advanced(BIND_EXECUTABLE)
 
+  # If we up our cmake minimum to 3.8.2 we can use enable_language(CSharp).
+  find_program(CSC csc.exe DOC "Path to CSharp compiler csc.exe")
+  if (NOT CSC)
+    message(STATUS "csc not found: .NET Windows tests will be disabled")
+  endif ()
+
   # if cygwin or mingw gcc is available, we do some extra tests
   find_program(GCC gcc.exe DOC "path to gcc.exe")
   if (NOT GCC)
@@ -321,6 +330,8 @@ else (UNIX)
   endif (RUNNING_OVER_SSH)
 endif (UNIX)
 
+CHECK_C_COMPILER_FLAG("-no-pie" no_pie_avail)
+
 # To avoid having separate subdirs with separate CMakeLists.txt files,
 # we use DynamoRIOConfig.cmake here.  It makes global changes, though.
 # We live with those changes on all our tests even though we don't
@@ -376,8 +387,10 @@ set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${ARCH_LDFLAGS}")
 
 # Must be AFTER build/include now that dr_api.h is configured.
 # We need this for Windows resources.rc to include globals_shared.h, and
-# for tools.c to include dr_helper.h.
-include_directories(AFTER ${PROJECT_SOURCE_DIR}/core/lib) # dr_helper.h
+# for tools.c to include drlibc.h.
+include_directories(AFTER
+  ${PROJECT_SOURCE_DIR}/core/drlibc # drlibc.h
+  ${PROJECT_SOURCE_DIR}/core/lib) # c_defines.h
 
 # Since we're including configure.h we do not want any default defines.
 # Note that the new DynamoRIOConfig.cmake doesn't set these so we can
@@ -428,7 +441,7 @@ if ("${CMAKE_GENERATOR}" MATCHES "Visual Studio")
   # for correct parallel builds we need a target
   add_dependencies(tools ${generate_tools_asm})
 endif ()
-target_link_libraries(tools drhelper)
+target_link_libraries(tools drlibc)
 
 if (WIN32)
   set_source_files_properties(${PROJECT_SOURCE_DIR}/core/win32/resources.rc
@@ -549,24 +562,6 @@ function(add_exe test source)
     # it hard to use other DR builds w/ these apps
     SKIP_BUILD_RPATH ON)
   if (UNIX)
-    # For common.nativeexec takeover tests, we do not support PIE. Newer (unix-) distri-
-    # butions with toolchains may enable PIE by default. In order to be able take over the
-    # "PLT style" dll call (test with executable in native exec list), we expect the call
-    # to jump to a PLT stub first. However with PIe enabled, the compiler will generate a
-    # rip-relative gotplt table call instead.
-    CHECK_C_COMPILER_FLAG("-no-pie" no_pie_avail)
-    if (no_pie_avail)
-      set_source_files_properties(common/nativeexec.c PROPERTIES COMPILE_FLAGS
-        "${CMAKE_C_FLAGS} -fno-pie")
-      if ("${test}" MATCHES "common.nativeexec")
-        append_link_flags(${test} "-no-pie")
-      endif()
-      set_source_files_properties(client-interface/pcache.c PROPERTIES COMPILE_FLAGS
-        "${CMAKE_C_FLAGS} -fno-pie")
-      if ("${test}" MATCHES "client.pcache" OR "${test}" MATCHES "client.pcache-use")
-        append_link_flags(${test} "-no-pie")
-      endif()
-    endif()
     # This is kind of a hack: perhaps we should add a flag for whether to use libs.
     if (NOT ${source} MATCHES "\\.asm$" AND NOT ${test} MATCHES "static"
         AND NOT ${test} MATCHES "drdecode")
@@ -642,6 +637,13 @@ set(ci_shared_app simple_app)
 set(ci_shared_app_src client-interface/${ci_shared_app}.c)
 add_exe(${ci_shared_app} ${ci_shared_app_src})
 
+function(setup_test_client_dll_basics test)
+  configure_DynamoRIO_client(${test})
+  append_property_string(TARGET ${test} LINK_FLAGS "${ARCH_DEBUG}")
+  add_dependencies(${test} api_headers)
+  copy_target_to_device(${test} "${location_suffix}")
+endfunction (setup_test_client_dll_basics)
+
 # A client interface app with client.
 # If ${source} does not exist, ${ci_shared_app} is used as the target app.
 # Note that we can't easily have a routine that takes no ops
@@ -679,10 +681,7 @@ function(tobuild_ci test source client_ops dr_ops exe_ops)
     # to avoid changing all the REG_ constants we ask for compatibility
     set(DynamoRIO_REG_COMPATIBILITY ON)
   endif (NOT "${source}" MATCHES "cpp\\.cpp")
-  configure_DynamoRIO_client(${test}.dll)
-  append_property_string(TARGET ${test}.dll LINK_FLAGS "${ARCH_DEBUG}")
-  add_dependencies(${test}.dll api_headers)
-  copy_target_to_device(${test}.dll "${location_suffix}")
+  setup_test_client_dll_basics(${test}.dll)
   get_client_path(client_path ${test}.dll ${test})
 
   set(testlist_ci ${testlist_ci} ${test} PARENT_SCOPE)
@@ -863,11 +862,29 @@ function(add_api_exe test source use_decoder use_static_DR)
   endif ()
 endfunction(add_api_exe)
 
-# macro so the PARENT_SCOPE in torunonly_api will reach caller of this
+# tobuild_api builds an API test which uses the either DR as a dynamic or
+# static library, depending on use_static_DR. It is a macro so the
+# PARENT_SCOPE in torunonly_api will reach caller of this.
 macro(tobuild_api test source dr_ops exe_ops use_decoder use_static_DR)
   add_api_exe(${test} ${source} ${use_decoder} ${use_static_DR})
   torunonly_api(${test} OFF ${source} "${dr_ops}" "${exe_ops}" ${use_decoder})
 endmacro(tobuild_api)
+
+# tobuild_static_nohide_api builds a static API test which uses the
+# dynamorio_static_nohide as a base library. It is a macro so the PARENT_SCOPE
+# in torunonly_api will reach caller of this.
+# XXX: Do we want to support a nicer API for 'nohide' than assuming that
+# add_api_exe adds dynamorio_static and replacing it manually with
+# dynamorio_static_nohide? Punting until there are more uses: it's a lot of
+# plumbing for no clear gain.
+macro(tobuild_static_nohide_api test source dr_ops exe_ops use_decoder)
+  add_api_exe(${test} ${source} ${use_decoder} ON)
+  torunonly_api(${test} OFF ${source} "${dr_ops}" "${exe_ops}" ${use_decoder})
+  get_target_property(lib_list ${test} LINK_LIBRARIES)
+  list(REMOVE_ITEM lib_list dynamorio_static)
+  set_property(TARGET ${test} PROPERTY LINK_LIBRARIES ${lib_list} )
+  target_link_libraries(${test} dynamorio_static_nohide)
+endmacro(tobuild_static_nohide_api)
 
 # run that uses a different build
 function(torunonly test realtest source dr_ops exe_ops)
@@ -877,6 +894,25 @@ function(torunonly test realtest source dr_ops exe_ops)
   set(${test}_dr_ops ${dr_ops} PARENT_SCOPE)
   set(${test}_exe_ops ${exe_ops} PARENT_SCOPE)
 endfunction(torunonly)
+
+# macro so the PARENT_SCOPE in torunonly will reach caller of this
+macro(tobuild_csharp test source)
+  if (CSC)
+    set(exe "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${test}.exe")
+    add_custom_target(${test} ALL DEPENDS ${exe})
+    if (X64)
+      set(platform "x64")
+    else ()
+      set(platform "x86")
+    endif ()
+    set(source_winpath "${CMAKE_CURRENT_SOURCE_DIR}/${source}")
+    string(REGEX REPLACE "/" "\\\\" source_winpath "${source_winpath}")
+    add_custom_command(OUTPUT ${exe} DEPENDS ${source}
+      COMMAND ${CSC} ARGS /debug /platform:${platform} /t:exe /out:${exe}
+      "${source_winpath}" VERBATIM)
+    torunonly(${test} ${exe} ${source} "" "")
+  endif ()
+endmacro(tobuild_csharp)
 
 function(tobind target)
   if (BIND_EXECUTABLE)
@@ -953,7 +989,7 @@ function(template2expect outexpect template runops key)
     " " rundefs "${rundefs}")
   # We replace bad define-name chars in client_lib with _.
   string(REGEX REPLACE
-    "[;/\\.!]"
+    "[;/\\.!,]"
     "_" rundefs "${rundefs}")
   string(REGEX REPLACE
     "([^ ])-"
@@ -1448,6 +1484,17 @@ function(torun test key source native standalone_dr dr_ops exe_ops added_out)
     # global reg keys and can thus run multiple instances of the same
     # app name simultaneously so we do not need to mark RUN_SERIAL
   endif (WIN32)
+
+  # A subset of release tests has been added and labeled with RUN_IN_RELEASE. It focuses
+  # on Google's use of the drcachesim client. We do not want to extend the Travis
+  # regression time by too much and keep the following list concise.
+  if (NOT DEBUG AND UNIX AND X64 AND NOT CMAKE_COMPILER_IS_CLANG)
+    if (${test} MATCHES "common" OR
+        ${test} MATCHES "drcachesim" OR
+        ${test} MATCHES "drcacheoff")
+      set_tests_properties(${test} PROPERTIES LABELS RUN_IN_RELEASE)
+    endif()
+  endif ()
   set(${added_out} ON PARENT_SCOPE)
 endfunction(torun)
 
@@ -1469,21 +1516,34 @@ macro(strings2lists test ops_var)
   endif ()
 endmacro()
 
+function(set_properties name test myprefix)
+  if (DEFINED ${test}_depends)
+    set_property(TEST ${name} APPEND PROPERTY DEPENDS "${myprefix}${${test}_depends}")
+  endif (DEFINED ${test}_depends)
+  if (DEFINED ${test}_self_serial)
+    # We blindly add a dep to every possible cross-cutting same test w/ diff ops.
+    # CTest seems ok with a dep on a non-existent test.
+    foreach (prefix ${prior_prefixes})
+      if (NOT "${prefix}" STREQUAL "${myprefix}")
+        set_property(TEST ${name} APPEND PROPERTY DEPENDS "${prefix}${test}")
+      endif ()
+    endforeach ()
+  endif ()
+  if (DEFINED ${test}_env)
+    set_property(TEST ${name} APPEND PROPERTY ENVIRONMENT "${myprefix}${${test}_env}")
+  endif ()
+endfunction ()
+
 function(torun_normal name test ops)
   strings2lists(${test} ops)
   torun("${name}" ${test} ${${test}_source} OFF OFF "${${test}_dr_ops};${ops}"
     "${${test}_exe_ops}" added)
-  if (DEFINED ${test}_depends)
-    ops2testprefix(prefix "${ops}")
-    set_property(TEST ${name} APPEND PROPERTY DEPENDS "${prefix}${${test}_depends}")
-  endif (DEFINED ${test}_depends)
-  if (DEFINED ${test}_env)
-    ops2testprefix(prefix "${ops}")
-    set_property(TEST ${name} APPEND PROPERTY ENVIRONMENT "${prefix}${${test}_env}")
-  endif ()
+  ops2testprefix(myprefix "${ops}")
+  set_properties(${name} ${test} ${myprefix})
 endfunction(torun_normal)
 
 function(torun_ci name test ops)
+  ops2testprefix(myprefix "${ops}")
   strings2lists(${test} ops)
   set(cli_ops "${${test}_client_ops}")
   if ("${test}" MATCHES "client\\.flush")
@@ -1509,14 +1569,7 @@ function(torun_ci name test ops)
       "${${test}_exe_ops}" added)
   endif ()
   if (added)
-    if (DEFINED ${test}_depends)
-      ops2testprefix(prefix "${ops}")
-      set_property(TEST ${name} APPEND PROPERTY DEPENDS "${prefix}${${test}_depends}")
-    endif (DEFINED ${test}_depends)
-    if (DEFINED ${test}_env)
-      ops2testprefix(prefix "${ops}")
-      set_property(TEST ${name} APPEND PROPERTY ENVIRONMENT "${prefix}${${test}_env}")
-    endif ()
+    set_properties(${name} ${test} ${myprefix})
   endif (added)
 endfunction(torun_ci)
 
@@ -1618,6 +1671,16 @@ if (X86) # FIXME i#1551, i#1569: port asm to ARM and AArch64
     target_link_libraries(common.nativeexec common.nativeexec.appdll)
     # We want rpath on Linux so we can load the appdll.
     set_target_properties(common.nativeexec PROPERTIES SKIP_BUILD_RPATH OFF)
+    # For common.nativeexec takeover tests, we do not support PIE. Newer (unix-) distri-
+    # butions with toolchains may enable PIE by default. In order to be able take over the
+    # "PLT style" dll call (test with executable in native exec list), we expect the call
+    # to jump to a PLT stub first. However with PIE enabled, the compiler will generate a
+    # rip-relative gotplt table call instead.
+    if (UNIX AND no_pie_avail)
+      set_source_files_properties(common/nativeexec.c PROPERTIES COMPILE_FLAGS
+        "${CMAKE_C_FLAGS} -fno-pie")
+      append_link_flags(common.nativeexec "-no-pie")
+    endif()
     if (UNIX)
       # FIXME i#978: Windows support NYI
       torunonly(common.nativeexec_retakeover common.nativeexec common/nativeexec.c
@@ -1698,7 +1761,9 @@ if (AARCH64)
 endif ()
 
 if (CLIENT_INTERFACE AND NOT ANDROID) # XXX i#1874: get working on Android
-  tobuild_api(libutil.frontend_test libutil/frontend_test.c "" "" OFF OFF)
+  # We don't want to link with DR.  We hack that for now by requesting drdecode so
+  # we'll get the arch defs.  XXX: Add a better way!
+  tobuild_api(libutil.frontend_test libutil/frontend_test.c "" "" ON OFF)
   target_link_libraries(libutil.frontend_test drfrontendlib)
 endif ()
 
@@ -1741,7 +1806,10 @@ if (CLIENT_INTERFACE)
     tobuild_ci(client.modules client-interface/modules.c "" "" "${modules_libname}")
   endif ()
   if (X86) # FIXME i#1551, i#1569: port to ARM and AArch64
-    tobuild_ci(client.alloc client-interface/alloc.c "" "" "")
+    tobuild_ci(client.alloc client-interface/alloc.c ""
+      # For the subtest "targeting upper 2GB of low 4GB" we move -vm_base out of the
+      # way:
+      "-no_vm_base_near_app -vm_base 0x120000000" "")
     tobuild_ci(client.cleancall client-interface/cleancall.c "" "" "")
     if (UNIX)
       torunonly_ci(client.cleancall.prof-pcs client.cleancall client.cleancall.dll
@@ -2057,6 +2125,15 @@ if (CLIENT_INTERFACE)
       "" "")
   endif (NOT ARM)
 
+  add_library(client.blackbox.dll.A SHARED client-interface/blackbox.dll.A.c)
+  setup_test_client_dll_basics(client.blackbox.dll.A)
+  add_library(client.blackbox.dll.B SHARED client-interface/blackbox.dll.B.c)
+  setup_test_client_dll_basics(client.blackbox.dll.B)
+  target_link_libraries(client.blackbox.dll.A client.blackbox.dll.B)
+  torunonly_ci(client.blackbox ${ci_shared_app} client.blackbox.dll.A
+    client-interface/${ci_shared_app} # for .expect
+    "" "" "")
+
   tobuild_ci(client.option_parse client-interface/option_parse.cpp
     "-x;4;-y;quoted string;-z;first;-z;single quotes -dash --dashes;-front;value;-y;accum;-front2;value2;-no_flag;-takes2;1_of_4;2_of_4;-takes2;3_of_4;4_of_4;-val_sep;v1.1 v1.2;-val_sep;v2.1 v2.2;-val_sep2;v1;v2;-val_sep2;v3;v4"
     "" "")
@@ -2189,7 +2266,12 @@ if (CLIENT_INTERFACE)
   if (X86) # FIXME i#1551, i#1569: port to ARM and AArch64
     # We need to load w/ the same base so the test passes
     set(DynamoRIO_SET_PREFERRED_BASE ON)
-    set(PREFERRED_BASE 0x6f000000)
+    if (X64)
+      # We need this higher than DR's vmm.
+      set(PREFERRED_BASE 0xabc00000)
+    else ()
+      set(PREFERRED_BASE 0x6f000000)
+    endif ()
     # Pass extra options to first run so this will pass when run repeatedly in local
     # build dir w/o loading any pcache
     tobuild_ci(client.pcache client-interface/pcache.c ""
@@ -2198,7 +2280,12 @@ if (CLIENT_INTERFACE)
     if (WIN32)
       append_link_flags(client.pcache "/dynamicbase:no")
     endif ()
-    set(DynamoRIO_SET_PREFERRED_BASE OFF)
+    if (UNIX AND no_pie_avail)
+      # i#2868: pcache tests are failing with ET_DYN so we disable PIE.
+      set_source_files_properties(client-interface/pcache.c PROPERTIES COMPILE_FLAGS
+        "${CMAKE_C_FLAGS} -fno-pie")
+      append_link_flags(client.pcache "-no-pie")
+    endif ()
     torunonly_ci(client.pcache-use client.pcache client.pcache.dll
       client-interface/pcache.c "" "-persist" "")
     # XXX: we should have the key be the default for the .expect but
@@ -2206,6 +2293,7 @@ if (CLIENT_INTERFACE)
     set(client.pcache-use_expectbase "pcache-use")
     # when running tests in parallel: have to generate pcaches first
     set(client.pcache-use_depends client.pcache)
+    set(DynamoRIO_SET_PREFERRED_BASE OFF)
   endif (X86)
 
   if (ARM AND NOT ANDROID)
@@ -2234,9 +2322,16 @@ if (CLIENT_INTERFACE)
         ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_1args.h
         ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_2args.h
         ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_2args_mm.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_3args_avx.h
         ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_3args.h
-        ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_4args.h)
+        ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_4args.h
+        # The following headers are x86 specific.
+        ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_3args_avx.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_2args_avx512_evex.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_2args_avx512_vex.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_3args_avx512_evex.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_3args_avx512_evex_mask.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_3args_avx512_vex.h
+        ${CMAKE_CURRENT_SOURCE_DIR}/api/ir_${sfx}_4args_avx512_evex_mask.h)
       append_property_string(SOURCE api/ir_${sfx}.c OBJECT_DEPENDS "${api_ir_headers}")
     endif ()
 
@@ -2293,8 +2388,14 @@ if (CLIENT_INTERFACE)
         # FIXME i#2694: failing sometimes on 32-bit Linux.
         set(detach_spawn_name api.detach_spawn_FLAKY)
       endif ()
+      set(detach_spawn_stress_name api.detach_spawn_stress_FLAKY)
+      set(detach_spawn_quick_exit_name api.detach_spawn_quick_exit)
       tobuild_api(${detach_spawn_name} api/detach_spawn.c "" "" OFF OFF)
       link_with_pthread(${detach_spawn_name})
+      tobuild_api(${detach_spawn_stress_name} api/detach_spawn_stress.c "" "" OFF OFF)
+      link_with_pthread(${detach_spawn_stress_name})
+      tobuild_api(${detach_spawn_quick_exit_name} api/detach_spawn_quick_exit.c "" "" OFF OFF)
+      link_with_pthread(${detach_spawn_quick_exit_name})
     endif ()
   endif ()
   # test static decoder library
@@ -2309,7 +2410,21 @@ if (CLIENT_INTERFACE)
   else ()
     tobuild_api(api.drdecode api/drdecode_x86.c "" "" ON OFF)
   endif ()
-
+  if (X86)
+    if (X64)
+      tobuild_api(decenc.drdecode_decenc_x86_64
+        ../../third_party/binutils/test_decenc/drdecode_decenc_x86_64.c "" "" OFF OFF)
+      target_include_directories(decenc.drdecode_decenc_x86_64 PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/binutils/test_decenc/)
+      set(decenc.drdecode_decenc_x86_64_runcmp "${CMAKE_CURRENT_SOURCE_DIR}/runcmp.cmake")
+    else ()
+      tobuild_api(decenc.drdecode_decenc_x86
+        ../../third_party/binutils/test_decenc/drdecode_decenc_x86.c "" "" OFF OFF)
+      target_include_directories(decenc.drdecode_decenc_x86 PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/binutils/test_decenc/)
+      set(decenc.drdecode_decenc_x86_runcmp "${CMAKE_CURRENT_SOURCE_DIR}/runcmp.cmake")
+    endif ()
+  endif ()
   if (X86) # Generated code is x86-specific.
     set(checklevel "")
     if (DEBUG)
@@ -2323,7 +2438,7 @@ if (CLIENT_INTERFACE)
     use_DynamoRIO_extension(api.ibl-stress drcontainers)
     link_with_pthread(api.ibl-stress)
     if (WIN32)
-      # On Windows, somehow linking with drcontainers inserts it and drhelper
+      # On Windows, somehow linking with drcontainers inserts it and drlibc
       # in front of dynamorio.lib, despite being added to the link list later,
       # which results in unresolved symbols.
       # The only fix I could come up with is to force dynamorio.lib earlier
@@ -2364,6 +2479,7 @@ endif ()
     target_link_libraries(api.static_detach ${libmath})
     tobuild_api(api.static_prepop api/static_prepop.c "" "" OFF ON)
     target_link_libraries(api.static_prepop ${libmath})
+
     if (NOT WIN32)
       tobuild_api(api.static_signal api/static_signal.c "" "" OFF ON)
       target_link_libraries(api.static_signal ${libmath})
@@ -2376,6 +2492,31 @@ endif ()
       tobuild_api(api.static_sideline_FLAKY api/static_sideline.c "" "" OFF ON)
       target_link_libraries(api.static_sideline_FLAKY ${libmath})
       link_with_pthread(api.static_sideline_FLAKY)
+
+      # i#3348: Ensure that DR without local symbols hidden is linkable and
+      # avoids conflicts (though CMake_symbol_check does most of the conflict
+      # checking).
+      tobuild_static_nohide_api(api.static_symbols api/static_symbols.c "" "" OFF)
+      append_link_flags(api.static_symbols "-Wl,--warn-common -Wl,--fatal-warnings")
+
+      # To ensure that the dynamorio_so_start/_end linker variables are actually
+      # used in static binaries, we have two tests which run the same "map mixup"
+      # logic: one which exits successfully because we provide the linker
+      # variables and another which exits with an assertion because we don't.
+      # Both versions utilize the dynamorio_static_nohide as a base because
+      # the variables in dynamorio_static have already been resolved as a part of
+      # the symbol hiding step.
+      set(api.static_maps_mixup_yesvars_expectbase
+         "static_maps_mixup_yesvars")
+      tobuild_static_nohide_api(api.static_maps_mixup_yesvars
+         api/static_maps_mixup.c "" "" OFF)
+      append_link_flags(api.static_maps_mixup_yesvars
+          "-Wl,--defsym,dynamorio_so_start=__executable_start -Wl,--defsym,dynamorio_so_end=end")
+
+      set(api.static_maps_mixup_novars_FLAKY_expectbase
+         "static_maps_mixup_novars")
+      tobuild_static_nohide_api(api.static_maps_mixup_novars_FLAKY
+         api/static_maps_mixup.c "" "" OFF)
     endif ()
   endif ()
 
@@ -2509,6 +2650,7 @@ endif ()
         set(tool.drcachesim.${testname}_basedir
           "${PROJECT_SOURCE_DIR}/clients/drcachesim/tests")
         set(tool.drcachesim.${testname}_rawtemp ON) # no preprocessor
+        set(tool.drcachesim.${testname}_self_serial ON)
       endmacro (torunonly_drcachesim)
 
       set(config_files_dir ${PROJECT_SOURCE_DIR}/clients/drcachesim/tests)
@@ -2605,7 +2747,8 @@ endif ()
       if (UNIX)
         add_exe(stride_benchmark
           ${PROJECT_SOURCE_DIR}/clients/drcachesim/tests/stride_benchmark.cpp)
-        torunonly_drcachesim(miss_analyzer stride_benchmark "-simulator_type miss_analyzer" "")
+        torunonly_drcachesim(miss_analyzer stride_benchmark
+          "-simulator_type miss_analyzer -miss_count_threshold 5000 -miss_frac_threshold 0.25" "")
       endif ()
 
       # Test other analysis tools
@@ -2686,6 +2829,7 @@ endif ()
           "foreach@${CMAKE_COMMAND}@-E@remove_directory@drmemtrace.${exetgt}.*.dir")
         set(tool.drcacheoff.${testname}_postcmd
           "firstglob@${drcachesim_path}@-indir@drmemtrace.${exetgt}.*.dir${sim_atops}")
+        set(tool.drcacheoff.${testname}_self_serial ON)
       endmacro()
 
       # We could share drcachesim-simple.templatex if we had the launcher fork
@@ -2701,6 +2845,21 @@ endif ()
           "${PROJECT_SOURCE_DIR}/clients/drcachesim/tests")
         set(tool.drcacheoff.legacy_rawtemp ON) # no preprocessor
       endif ()
+
+      # Test reading a trace in sharded snappy-compressed files.
+      if (libsnappy)
+        # with a parallel tool (basic_counts)
+        torunonly_api(tool.drcacheoff.snappy "${drcachesim_path}" "offline-snappy.c" ""
+          "-indir;${PROJECT_SOURCE_DIR}/clients/drcachesim/tests/drmemtrace.chase-snappy.x64.tracedir;-simulator_type;basic_counts"
+          OFF)
+
+        # with a legacy serial tool (full simulator)
+        torunonly_api(tool.drcacheoff.snappy "${drcachesim_path}" "offline-snappy-serial.c" ""
+          "-indir;${PROJECT_SOURCE_DIR}/clients/drcachesim/tests/drmemtrace.chase-snappy.x64.tracedir"
+          OFF)
+        set(tool.drcacheoff.snappy_basedir
+          "${PROJECT_SOURCE_DIR}/clients/drcachesim/tests")
+      endif()
 
       if (UNIX) # Enable on Windows once i#1727 is fixed.
         # FIXME i#2384: we need to combine the subdir from the child with the
@@ -3207,9 +3366,7 @@ if (UNIX)
       # The default value of CMAKE_SHARED_LIBRARY_LINK_C_FLAGS has -rdynamic,
       # which doesn't play well with clang and -static.  Adding
       # --no-export-dynamic avoids the problem.
-      # We get two copies of memcpy (from drhelper and from libc) so we avoid
-      # linker warnings on gcc 6.x+ (i#1958).
-      "-static -Wl,--no-export-dynamic -Wl,--allow-multiple-definition")
+      "-static -Wl,--no-export-dynamic")
   endif ()
   # Test position independent executables.
   # FIXME i#1001: fib-pie fails with -early_inject.
@@ -3445,6 +3602,8 @@ else (UNIX)
   #tobuild_runall(runall.preunload runall/preunload.runall "")
   #tobuild_runall(runall.processchain runall/processchain.runall "")
 
+  tobuild_csharp(win32.dotnet win32/dotnet.cs)
+
   # Cross-arch mixedmode/x86_to_x64 test: can only be done via a suite of tests that
   # build both 32-bit and 64-bit.  We have 32-bit just build, and
   # 64-bit then builds and runs both directions.
@@ -3472,12 +3631,12 @@ else (UNIX)
       torunonly(win32.mixedmode_late
         ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/create_process.exe
         win32/mixedmode.c
-        "-early_inject -heap_in_lower_4GB"
+        "-early_inject -heap_in_lower_4GB -reachable_heap"
         "${TEST_32BIT_PATH}/win32.mixedmode.exe;mixedmode")
       torunonly(win32.mixedmode
         ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/create_process.exe
         win32/mixedmode.c
-        "-early_inject_map -early_inject_location 5 -heap_in_lower_4GB"
+        "-early_inject_map -early_inject_location 5 -heap_in_lower_4GB -reachable_heap"
         "${TEST_32BIT_PATH}/win32.mixedmode.exe;mixedmode")
       # i#1494: Trace creation should be disabled for -x86_to_x64.
       # We did not use -disable_traces here to check if trace creation is
@@ -3485,12 +3644,12 @@ else (UNIX)
       torunonly(win32.x86_to_x64
         ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/create_process.exe
         win32/mixedmode.c
-        "-early_inject_map -early_inject_location 5 -heap_in_lower_4GB -x86_to_x64"
+        "-early_inject_map -early_inject_location 5 -heap_in_lower_4GB -reachable_heap -x86_to_x64"
         "${TEST_32BIT_PATH}/win32.mixedmode.exe;x86_to_x64")
       torunonly(win32.x86_to_x64_ibl_opt
         ${MAIN_RUNTIME_OUTPUT_DIRECTORY}/create_process.exe
         win32/mixedmode.c
-        "-early_inject_map -early_inject_location 5 -heap_in_lower_4GB -x86_to_x64 -x86_to_x64_ibl_opt"
+        "-early_inject_map -early_inject_location 5 -heap_in_lower_4GB -reachable_heap -x86_to_x64 -x86_to_x64_ibl_opt"
         "${TEST_32BIT_PATH}/win32.mixedmode.exe;x86_to_x64")
     else (X64)
       add_exe(win32.mixedmode win32/mixedmode.c)
@@ -3574,7 +3733,7 @@ if (X64 AND NOT AARCH64) # FIXME i#1569: get working on AArch64
     endif (UNIX)
   endif (CLIENT_INTERFACE)
   torunonly(low4GB security-common.selfmod security-common/selfmod.c
-    "-heap_in_lower_4GB" "")
+    "-heap_in_lower_4GB -reachable_heap" "")
 endif (X64 AND NOT AARCH64)
 
 tobuild("security-common.TestAllocWE" security-common/TestAllocWE.c)
@@ -3619,6 +3778,16 @@ function(run2testname testname ops test)
   set(${testname} "${prefix}${test}" PARENT_SCOPE)
 endfunction(run2testname)
 
+function(is_test_enabled_by_name output name regex)
+  set(enabled OFF)
+  if (NOT SKIP_FLAKY_TESTS OR NOT "${name}" MATCHES "_FLAKY")
+    if (NOT regex OR "${name}" MATCHES "${regex}")
+      set(enabled ON)
+    endif ()
+  endif ()
+  set(${output} ${enabled} PARENT_SCOPE)
+endfunction ()
+
 foreach (run ${run_list})
   set(enabled OFF)
 
@@ -3637,6 +3806,12 @@ foreach (run ${run_list})
   string(REGEX MATCHALL "^X86::" is_x86 "${run}")
   string(REGEX REPLACE "^X86::" "" run "${run}")
   if (is_x86 AND NOT X86)
+    set(enabled OFF)
+  endif ()
+
+  string(REGEX MATCHALL "^X64::" is_x64 "${run}")
+  string(REGEX REPLACE "^X64::" "" run "${run}")
+  if (is_x64 AND NOT X64)
     set(enabled OFF)
   endif ()
 
@@ -3666,29 +3841,38 @@ foreach (run ${run_list})
       set(regex "^common")
     endif ()
 
+    ops2testprefix(prefix "${run}")
+    list(FIND prior_prefixes "${prefix}" index)
+    if (${index} EQUAL -1)
+      list(APPEND prior_prefixes "${prefix}")
+    endif ()
     foreach (test ${testlist_normal})
-      if (NOT regex OR "${test}" MATCHES "${regex}")
+      is_test_enabled_by_name(name_ok ${test} "${regex}")
+      if (name_ok)
         run2testname(test_name "${run}" ${test})
         torun_normal("${test_name}" ${test} "${run}")
-      endif (NOT regex OR "${test}" MATCHES "${regex}")
+      endif ()
     endforeach (test)
     foreach (test ${testlist_ci})
-      if (NOT regex OR "${test}" MATCHES "${regex}")
+      is_test_enabled_by_name(name_ok ${test} "${regex}")
+      if (name_ok)
         run2testname(test_name "${run}" ${test})
         torun_ci("${test_name}" ${test} "${run}")
-      endif (NOT regex OR "${test}" MATCHES "${regex}")
+      endif ()
     endforeach (test)
     foreach (test ${testlist_api})
-      if (NOT regex OR "${test}" MATCHES "${regex}")
+      is_test_enabled_by_name(name_ok ${test} "${regex}")
+      if (name_ok)
         run2testname(test_name "${run}" ${test})
         torun_api("${test_name}" ${test} "${run}")
-      endif (NOT regex OR "${test}" MATCHES "${regex}")
+      endif ()
     endforeach (test)
     foreach (test ${testlist_runall})
-      if (NOT regex OR "${test}" MATCHES "${regex}")
+      is_test_enabled_by_name(name_ok ${test} "${regex}")
+      if (name_ok)
         run2testname(test_name "${run}" ${test})
         torun_runall("${test_name}" ${test} "${run}")
-      endif (NOT regex OR "${test}" MATCHES "${regex}")
+      endif ()
     endforeach (test)
 
   endif (enabled)
@@ -3736,11 +3920,9 @@ if (APPLE)
     code_api|client.null_instrument
     code_api|client.option_parse
     code_api|client.drcontainers-test
-    code_api|client.fcache_shift
     code_api|client.destructor
     code_api|sample.signal
     code_api|tool.drcpusim.simple
-    code_api|tool.drcpusim.cpuid-Banias
     code_api|tool.drcpusim.cpuid-Prescott
     code_api|tool.drcpusim.cpuid-Presler
     code_api|tool.drcpusim.cpuid-Merom
@@ -3754,5 +3936,11 @@ if (APPLE)
     PROPERTIES LABELS OSX)
   if (DEBUG) # FIXME i#1806: fails in release
     set_tests_properties(code_api|client.flush PROPERTIES LABELS OSX)
+  endif ()
+  if (NOT X64)
+    set_tests_properties(
+      code_api|client.fcache_shift
+    code_api|tool.drcpusim.cpuid-Banias
+      PROPERTIES LABELS OSX)
   endif ()
 endif ()

@@ -1,5 +1,5 @@
 /* **********************************************************
- * Copyright (c) 2011-2017 Google, Inc.  All rights reserved.
+ * Copyright (c) 2011-2019 Google, Inc.  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * **********************************************************/
 
@@ -44,8 +44,6 @@
 #ifndef AARCH64
 #    include "x86/decode_private.h"
 #endif
-
-#include <string.h> /* for memcpy */
 
 #if defined(DEBUG) && !defined(STANDALONE_DECODER)
 /* case 10450: give messages to clients */
@@ -597,7 +595,17 @@ opnd_create_far_base_disp_ex(reg_id_t seg, reg_id_t base_reg, reg_id_t index_reg
                 });
     opnd_set_disp_helper(&opnd, disp);
     opnd.value.base_disp.base_reg = base_reg;
+#ifdef X86
+    if (reg_is_strictly_zmm(index_reg)) {
+        opnd.value.base_disp.index_reg = index_reg - DR_REG_START_ZMM;
+        opnd.value.base_disp.index_reg_is_zmm = 1;
+    } else {
+        opnd.value.base_disp.index_reg = index_reg;
+        opnd.value.base_disp.index_reg_is_zmm = 0;
+    }
+#else
     opnd.value.base_disp.index_reg = index_reg;
+#endif
 #if defined(ARM)
     if (scale > 1) {
         opnd.value.base_disp.shift_type = DR_SHIFT_LSL;
@@ -1108,7 +1116,7 @@ opnd_get_reg_used(opnd_t opnd, int index)
 /***************************************************************************/
 /* utility routines */
 
-const reg_id_t regparms[] = {
+const reg_id_t d_r_regparms[] = {
 #ifdef X86
 #    ifdef X64
     REGPARM_0,  REGPARM_1, REGPARM_2, REGPARM_3,
@@ -1323,6 +1331,10 @@ opnd_same(opnd_t op1, opnd_t op2)
         return (IF_X86(op1.aux.segment == op2.aux.segment &&)
                         op1.value.base_disp.base_reg == op2.value.base_disp.base_reg &&
                 op1.value.base_disp.index_reg == op2.value.base_disp.index_reg &&
+#ifdef X86
+                op1.value.base_disp.index_reg_is_zmm ==
+                    op2.value.base_disp.index_reg_is_zmm &&
+#endif
                 IF_X86(op1.value.base_disp.scale == op2.value.base_disp.scale &&) IF_ARM(
                     op1.value.base_disp.shift_type == op2.value.base_disp.shift_type &&
                     op1.value.base_disp.shift_amount_minus_1 ==
@@ -1498,7 +1510,9 @@ opnd_size_in_bytes(opnd_size_t size)
     case OPSZ_9b:     /* round up */
     case OPSZ_10b:
     case OPSZ_11b:
-    case OPSZ_12b: return 2;
+    case OPSZ_12b:
+    case OPSZ_eighth_16_vex32:
+    case OPSZ_eighth_16_vex32_evex64: return 2;
     case OPSZ_20b: /* round up */
     case OPSZ_3: return 3;
     case OPSZ_4_of_8:
@@ -1515,11 +1529,14 @@ opnd_size_in_bytes(opnd_size_t size)
     case OPSZ_4_rex8:
     case OPSZ_4:
     case OPSZ_4_reg16: /* mem size */
-    case OPSZ_25b: /* round up */ return 4;
+    case OPSZ_25b:     /* round up */
+    case OPSZ_quarter_16_vex32:
+    case OPSZ_quarter_16_vex32_evex64: return 4;
     case OPSZ_6_irex10_short4: /* default size */
     case OPSZ_6: return 6;
     case OPSZ_8_of_16:
     case OPSZ_8_of_16_vex32:
+    case OPSZ_half_16_vex32:
     case OPSZ_8_short2:
     case OPSZ_8_short4:
     case OPSZ_8:
@@ -1532,7 +1549,9 @@ opnd_size_in_bytes(opnd_size_t size)
     case OPSZ_8_rex16_short4: /* default size */ return 8;
     case OPSZ_16:
     case OPSZ_16_vex32:
-    case OPSZ_16_of_32: return 16;
+    case OPSZ_16_of_32:
+    case OPSZ_16_vex32_evex64: return 16;
+    case OPSZ_vex32_evex64: return 32;
     case OPSZ_6x10:
         /* table base + limit; w/ addr16, different format, but same total footprint */
         return IF_X64_ELSE(6, 10);
@@ -1579,7 +1598,8 @@ opnd_size_in_bytes(opnd_size_t size)
     case OPSZ_128: return 128;
     case OPSZ_512: return 512;
     case OPSZ_VAR_REGLIST: return 0; /* varies to match reglist operand */
-    case OPSZ_xsave: return 0;       /* > 512 bytes: use cpuid to determine */
+    case OPSZ_xsave:
+        return 0; /* > 512 bytes: client to use drutil_opnd_mem_size_in_bytes */
     default: CLIENT_ASSERT(false, "opnd_size_in_bytes: invalid opnd type"); return 0;
     }
 }
@@ -1743,8 +1763,8 @@ reg_get_value_priv(reg_id_t reg, priv_mcontext_t *mc)
     }
 #endif
     /* mmx and segment cannot be part of address.
-     * xmm/ymm can with VSIB, but we'd have to either return a larger type,
-     * or take in an offset within the xmm/ymm register -- so we leave this
+     * xmm/ymm/zmm can with VSIB, but we'd have to either return a larger type,
+     * or take in an offset within the xmm/ymm/zmm register -- so we leave this
      * routine supporting only GPR and have a separate routine for VSIB
      * (opnd_compute_VSIB_index()).
      * if want to use this routine for more than just effective address
@@ -1774,11 +1794,15 @@ reg_get_value_ex(reg_id_t reg, dr_mcontext_t *mc, OUT byte *val)
     } else if (reg >= DR_REG_START_XMM && reg <= DR_REG_STOP_XMM) {
         if (!TEST(DR_MC_MULTIMEDIA, mc->flags) || mc->size != sizeof(dr_mcontext_t))
             return false;
-        memcpy(val, &mc->ymm[reg - DR_REG_START_XMM], XMM_REG_SIZE);
+        memcpy(val, &mc->simd[reg - DR_REG_START_XMM], XMM_REG_SIZE);
     } else if (reg >= DR_REG_START_YMM && reg <= DR_REG_STOP_YMM) {
         if (!TEST(DR_MC_MULTIMEDIA, mc->flags) || mc->size != sizeof(dr_mcontext_t))
             return false;
-        memcpy(val, &mc->ymm[reg - DR_REG_START_YMM], YMM_REG_SIZE);
+        memcpy(val, &mc->simd[reg - DR_REG_START_YMM], YMM_REG_SIZE);
+    } else if (reg >= DR_REG_START_ZMM && reg <= DR_REG_STOP_ZMM) {
+        if (!TEST(DR_MC_MULTIMEDIA, mc->flags) || mc->size != sizeof(dr_mcontext_t))
+            return false;
+        memcpy(val, &mc->simd[reg - DR_REG_START_ZMM], ZMM_REG_SIZE);
     } else {
         reg_t regval = reg_get_value(reg, mc);
         *(reg_t *)val = regval;
@@ -1790,7 +1814,7 @@ reg_get_value_ex(reg_id_t reg, dr_mcontext_t *mc, OUT byte *val)
 }
 
 /* Sets the register reg in the passed in mcontext to value.  Currently only works
- * with ptr sized registers. FIXME - handle other sized registers. */
+ * with ptr sized registers. See reg_set_value_ex to handle other sized registers. */
 void
 reg_set_value_priv(reg_id_t reg, priv_mcontext_t *mc, reg_t value)
 {
@@ -1803,29 +1827,33 @@ reg_set_value_priv(reg_id_t reg, priv_mcontext_t *mc, reg_t value)
     *(reg_t *)((byte *)mc + opnd_get_reg_mcontext_offs(reg)) = value;
 }
 
-
-/* Sets the register reg in the passed in mcontext to value.  Currently only works
- * with ptr sized registers. FIXME - handle other sized registers. */
-void
-reg_set_value_priv_ex(reg_id_t reg, priv_mcontext_t *mc, byte *value)
+bool
+reg_set_value_ex_priv(reg_id_t reg, priv_mcontext_t *mc, byte *val_buf)
 {
-    if (reg == REG_NULL)
-        return;
-
 #ifdef X86
-    if (reg >= DR_REG_START_MMX && reg <= DR_REG_STOP_MMX) {
+    CLIENT_ASSERT(reg != REG_NULL, "REG_NULL was passed.");
+
+    dr_zmm_t *simd = (dr_zmm_t *)((byte *)mc + SIMD_OFFSET);
+
+    if (reg_is_gpr(reg)) {
+        reg_t *value = (reg_t *)val_buf;
+        reg_set_value_priv(reg, mc, *value);
     } else if (reg >= DR_REG_START_XMM && reg <= DR_REG_STOP_XMM) {
-        dr_ymm_t *ymm = (dr_ymm_t *) ((byte *)mc + XMM_OFFSET);
-        memcpy(&(ymm[reg - DR_REG_START_XMM]), value, XMM_REG_SIZE);
+        memcpy(&(simd[reg - DR_REG_START_XMM]), val_buf, XMM_REG_SIZE);
     } else if (reg >= DR_REG_START_YMM && reg <= DR_REG_STOP_YMM) {
-        dr_ymm_t *ymm = (dr_ymm_t *) ((byte *)mc + XMM_OFFSET);
-        memcpy(&(ymm[reg - DR_REG_START_YMM]), value, YMM_REG_SIZE);
+        memcpy(&(simd[reg - DR_REG_START_YMM]), val_buf, YMM_REG_SIZE);
+    } else if (reg >= DR_REG_START_ZMM && reg <= DR_REG_STOP_ZMM) {
+        memcpy(&(simd[reg - DR_REG_START_ZMM]), val_buf, ZMM_REG_SIZE);
     } else {
-        reg_t reg_value =  *(reg_t *)value;
-        reg_set_value_priv(reg, mc, reg_value);
+        /* Note, we can reach here for MMX register */
+        CLIENT_ASSERT(false, "NYI i#3504");
+        return false;
     }
+
+    return true;
 #else
-    CLIENT_ASSERT(false, "NYI i#1551");
+    CLIENT_ASSERT(false, "NYI  i#1551, i#3504");
+    return false;
 #endif
 }
 
@@ -1838,10 +1866,10 @@ reg_set_value(reg_id_t reg, dr_mcontext_t *mc, reg_t value)
 }
 
 DR_API
-void
-reg_set_value_ex(reg_id_t reg, dr_mcontext_t *mc, IN byte *val){
-
-    reg_set_value_priv_ex(reg, dr_mcontext_as_priv_mcontext(mc), val);
+bool
+reg_set_value_ex(reg_id_t reg, dr_mcontext_t *mc, IN byte *val_buf)
+{
+    return reg_set_value_ex_priv(reg, dr_mcontext_as_priv_mcontext(mc), val_buf);
 }
 
 /* helper for sharing w/ VSIB computations */
@@ -1873,7 +1901,7 @@ opnd_compute_address_helper(opnd_t opnd, priv_mcontext_t *mc, ptr_int_t scaled_i
     addr = seg_base;
     base = opnd_get_base(opnd);
     disp = opnd_get_disp(opnd);
-    logopnd(get_thread_private_dcontext(), 4, opnd, "opnd_compute_address for");
+    d_r_logopnd(get_thread_private_dcontext(), 4, opnd, "opnd_compute_address for");
     addr += reg_get_value_priv(base, mc);
     LOG(THREAD_GET, LOG_ALL, 4, "\tbase => " PFX "\n", addr);
     addr += scaled_index;
@@ -1918,7 +1946,7 @@ opnd_compute_address_priv(opnd_t opnd, priv_mcontext_t *mc)
                 (index_val >> amount) | (index_val << (sizeof(reg_t) * 8 - amount));
             break;
         case DR_SHIFT_RRX:
-            scaled_index = (index_val >> 1) ||
+            scaled_index = (index_val >> 1) |
                 (TEST(EFLAGS_C, mc->cpsr) ? (1 << (sizeof(reg_t) * 8 - 1)) : 0);
             break;
         default: scaled_index = index_val;
@@ -2014,10 +2042,23 @@ reg_is_extended(reg_id_t reg)
             (reg >= REG_START_16 + 8 && reg <= REG_STOP_16) ||
             (reg >= REG_START_8 + 8 && reg <= REG_STOP_8) ||
             (reg >= REG_START_x64_8 && reg <= REG_STOP_x64_8) ||
-            (reg >= REG_START_XMM + 8 && reg <= REG_STOP_XMM) ||
-            (reg >= REG_START_YMM + 8 && reg <= REG_STOP_YMM) ||
+            ((reg >= DR_REG_START_XMM + 8 && reg <= DR_REG_START_XMM + 15) ||
+             (reg >= DR_REG_START_XMM + 24 && reg <= DR_REG_STOP_XMM)) ||
+            ((reg >= DR_REG_START_YMM + 8 && reg <= DR_REG_START_YMM + 15) ||
+             (reg >= DR_REG_START_YMM + 24 && reg <= DR_REG_STOP_YMM)) ||
+            ((reg >= DR_REG_START_ZMM + 8 && reg <= DR_REG_START_ZMM + 15) ||
+             (reg >= DR_REG_START_ZMM + 24 && reg <= DR_REG_STOP_ZMM)) ||
             (reg >= REG_START_DR + 8 && reg <= REG_STOP_DR) ||
             (reg >= REG_START_CR + 8 && reg <= REG_STOP_CR));
+}
+
+bool
+reg_is_avx512_extended(reg_id_t reg)
+{
+    /* Note that we do consider spl, bpl, sil, and dil to be "extended" */
+    return ((reg >= DR_REG_START_XMM + 16 && reg <= DR_REG_STOP_XMM) ||
+            (reg >= DR_REG_START_YMM + 16 && reg <= DR_REG_STOP_YMM) ||
+            (reg >= DR_REG_START_ZMM + 16 && reg <= DR_REG_STOP_ZMM));
 }
 #    endif
 #endif
@@ -2056,7 +2097,7 @@ reg_parameter_num(reg_id_t reg)
 {
     int r;
     for (r = 0; r < NUM_REGPARM; r++) {
-        if (reg == regparms[r])
+        if (reg == d_r_regparms[r])
             return r;
     }
     return -1;
@@ -2108,10 +2149,14 @@ reg_get_bits(reg_id_t reg)
         return (byte)((reg - REG_START_16) % 8);
     if (reg >= REG_START_MMX && reg <= REG_STOP_MMX)
         return (byte)((reg - REG_START_MMX) % 8);
-    if (reg >= REG_START_XMM && reg <= REG_STOP_XMM)
-        return (byte)((reg - REG_START_XMM) % 8);
-    if (reg >= REG_START_YMM && reg <= REG_STOP_YMM)
-        return (byte)((reg - REG_START_YMM) % 8);
+    if (reg >= DR_REG_START_XMM && reg <= DR_REG_STOP_XMM)
+        return (byte)((reg - DR_REG_START_XMM) % 8);
+    if (reg >= DR_REG_START_YMM && reg <= DR_REG_STOP_YMM)
+        return (byte)((reg - DR_REG_START_YMM) % 8);
+    if (reg >= DR_REG_START_ZMM && reg <= DR_REG_STOP_ZMM)
+        return (byte)((reg - DR_REG_START_ZMM) % 8);
+    if (reg >= DR_REG_START_OPMASK && reg <= DR_REG_STOP_OPMASK)
+        return (byte)((reg - DR_REG_START_OPMASK) % 8);
     if (reg >= REG_START_SEGMENT && reg <= REG_STOP_SEGMENT)
         return (byte)((reg - REG_START_SEGMENT) % 8);
     if (reg >= REG_START_DR && reg <= REG_STOP_DR)
@@ -2148,10 +2193,22 @@ reg_get_size(reg_id_t reg)
         return OPSZ_2;
     if (reg >= REG_START_MMX && reg <= REG_STOP_MMX)
         return OPSZ_8;
-    if (reg >= REG_START_XMM && reg <= REG_STOP_XMM)
+    if (reg >= DR_REG_START_XMM && reg <= DR_REG_STOP_XMM)
         return OPSZ_16;
-    if (reg >= REG_START_YMM && reg <= REG_STOP_YMM)
+    if (reg >= DR_REG_START_YMM && reg <= DR_REG_STOP_YMM)
         return OPSZ_32;
+    if (reg >= DR_REG_START_ZMM && reg <= DR_REG_STOP_ZMM)
+        return OPSZ_64;
+    if (reg >= DR_REG_START_OPMASK && reg <= DR_REG_STOP_OPMASK) {
+        /* The default is 16 bits wide. The register may be up to 64 bits wide with
+         * the AVX-512BW extension, which depends on the processor. The number of
+         * bits actually used depends on the vector type of the instruction.
+         * XXX i#1312: return variable size dependent on processor feature. OPSZ_8
+         * is the most recent maximal physical register, but may not apply to every
+         * processor and OS we're running on.
+         */
+        return OPSZ_8;
+    }
     if (reg >= REG_START_SEGMENT && reg <= REG_STOP_SEGMENT)
         return OPSZ_2;
     if (reg >= REG_START_DR && reg <= REG_STOP_DR)

@@ -283,37 +283,31 @@ static const byte variable_length[256] = {
 /* Data table for the additional fixed part of a two-byte opcode.
  * This table is indexed by the 2nd opcode byte.  Zero entries are
  * reserved/bad opcodes.
- * N.B.: none of these (except IA32_ON_IA64) need adjustment
- * for data16 or addr16.
+ * N.B.: none of these need adjustment for data16 or addr16.
+ *
+ * 0f0f has extra suffix opcode byte
+ * 0f78 has immeds depending on prefixes: handled in decode_sizeof()
  */
 static const byte escape_fixed_length[256] = {
-    1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 2,
-    /* 0 */ /* 0f0f has extra suffix opcode byte */
+    1, 1, 1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 1, 2, /* 0 */
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, /* 1 */
     1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, /* 2 */
     1, 1, 1, 1, 1, 1, 0, 1, 1, 0, 1, 0, 0, 0, 0, 0, /* 3 */
+
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, /* 4 */
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, /* 5 */
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, /* 6 */
-    2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, /* 7 */
+    2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, /* 7 */
 
     5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, /* 8 */
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, /* 9 */
     1, 1, 1, 1, 2, 1, 0, 0, 1, 1, 1, 1, 2, 1, 1, 1, /* A */
-#ifdef IA32_ON_IA64
-    /* change is the 5, could also be 3 depending on which mode we are */
-    /* FIXME : no modrm byte so the standard variable thing won't work */
-    /* (need a escape_disp_adjustment table) */
-    1, 1, 1, 1, 1, 1, 1, 1, 5, 1, 2, 1, 1, 1, 1, 1, /* B */
-#else
-    1,1,1,1, 1,1,1,1, 1,1,2,1, 1,1,1,1,  /* B */
-#endif
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1, /* B */
 
     1, 1, 2, 1, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, /* C */
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, /* D */
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, /* E */
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0  /* F */
-    /* 0f78 has immeds depending on prefixes: handled in decode_sizeof() */
 };
 
 /* Some macros to make the following table look better. */
@@ -333,16 +327,13 @@ static const byte escape_variable_length[256] = {
     m, m, m, m, m, m, m, m, m,  m, m,  m, m, m, m, m, /* 4 */
     m, m, m, m, m, m, m, m, m,  m, m,  m, m, m, m, m, /* 5 */
     m, m, m, m, m, m, m, m, m,  m, m,  m, m, m, m, m, /* 6 */
-    m, m, m, m, m, m, m, 0, m,  m, 0,  0, m, m, m, m, /* 7 */
+    m, m, m, m, m, m, m, 0, m,  m, m,  m, m, m, m, m, /* 7 */
 
     0, 0, 0, 0, 0, 0, 0, 0, 0,  0, 0,  0, 0, 0, 0, 0, /* 8 */
     m, m, m, m, m, m, m, m, m,  m, m,  m, m, m, m, m, /* 9 */
     0, 0, 0, m, m, m, 0, 0, 0,  0, 0,  m, m, m, m, m, /* A */
-#ifdef IA32_ON_IA64
-    m, m, m, m, m, m, m, m, 0,  0, m,  m, m, m, m, m, /* B */
-#else
     m, m, m, m, m, m, m, m, m,  0, m,  m, m, m, m, m, /* B */
-#endif
+
     m, m, m, m, m, m, m, m, 0,  0, 0,  0, 0, 0, 0, 0, /* C */
     m, m, m, m, m, m, m, m, m,  m, m,  m, m, m, m, m, /* D */
     m, m, m, m, m, m, m, m, m,  m, m,  m, m, m, m, m, /* E */
@@ -558,7 +549,7 @@ decode_sizeof(dcontext_t *dcontext, byte *start_pc,
                      */
                     bool vex3 = (opc == VEX_3BYTE_PREFIX_OPCODE);
                     byte vex_mm = 0;
-                    opc = (uint) * (++pc); /* 2nd vex prefix byte */
+                    opc = (uint) * (++pc); /* 2nd (e)vex prefix byte */
                     sz += 1;
                     if (vex3) {
                         vex_mm = (byte)(opc & 0x1f);
@@ -583,7 +574,9 @@ decode_sizeof(dcontext_t *dcontext, byte *start_pc,
                     if (num_prefixes != NULL)
                         *num_prefixes = sz;
                     /* no prefixes after vex + already did full size, so goto end */
-                    if (!vex3 || (vex3 && (vex_mm == 1))) {
+                    bool implied_escape = (!vex3 && !evex_prefix) ||
+                        ((vex3 || evex_prefix) && (vex_mm == 1));
+                    if (implied_escape) {
                         sz += sizeof_escape(dcontext, pc, addr16 _IF_X64(&rip_rel_pc));
                         goto decode_sizeof_done;
                     } else if (vex_mm == 2) {

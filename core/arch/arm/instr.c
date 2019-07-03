@@ -465,6 +465,12 @@ instr_is_mmx(instr_t *instr)
 }
 
 bool
+instr_is_opmask(instr_t *instr)
+{
+    return false;
+}
+
+bool
 instr_is_sse_or_sse2(instr_t *instr)
 {
     return false;
@@ -731,13 +737,37 @@ reg_is_simd(reg_id_t reg)
 }
 
 bool
+reg_is_opmask(reg_id_t reg)
+{
+    return false;
+}
+
+bool
+reg_is_strictly_zmm(reg_id_t reg)
+{
+    return false;
+}
+
+bool
 reg_is_ymm(reg_id_t reg)
 {
     return false;
 }
 
 bool
+reg_is_strictly_ymm(reg_id_t reg)
+{
+    return false;
+}
+
+bool
 reg_is_xmm(reg_id_t reg)
+{
+    return false;
+}
+
+bool
+reg_is_strictly_xmm(reg_id_t reg)
 {
     return false;
 }

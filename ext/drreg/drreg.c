@@ -40,6 +40,7 @@
  * Distinguish by name, "drregi_*" or sthg.
  */
 
+#include "dr_defines.h"
 #include "dr_api.h"
 #include "drmgr.h"
 #include "drvector.h"
@@ -69,7 +70,7 @@
 #define MAX_SPILLS (SPILL_SLOT_MAX + 8)
 
 /* This should be pretty hard to exceed as there aren't this many XMMs */
-#define MAX_XMM_SPILLS (NUM_SIMD_SLOTS + 8)
+#define MAX_XMM_SPILLS (MCXT_NUM_SIMD_SLOTS + 8)
 #define REG_XMM_SIZE 16
 
 #define AFLAGS_SLOT 0 /* always */
@@ -111,13 +112,13 @@ typedef struct _reg_info_t {
 #define XMM_IDX(reg) ((reg)-DR_REG_START_XMM)
 
 /* Depending on architecture, we have a set of applicable XMM registers */
-#define DR_REG_APPLICABLE_STOP_XMM (DR_REG_START_XMM + NUM_SIMD_SLOTS - 1)
+#define DR_REG_APPLICABLE_STOP_XMM (DR_REG_START_XMM + MCXT_NUM_SIMD_SLOTS - 1)
 
 typedef struct _per_thread_t {
     instr_t *cur_instr;
     int live_idx;
     reg_info_t reg[DR_NUM_GPR_REGS];
-    reg_info_t xmm_reg[NUM_SIMD_SLOTS];
+    reg_info_t xmm_reg[MCXT_NUM_SIMD_SLOTS];
     byte xmm_spills[REG_XMM_SIZE * MAX_XMM_SPILLS]; /* Storage for XMM data */
     reg_info_t aflags;
     reg_id_t slot_use[MAX_SPILLS];         /* holds the reg_id_t of which reg is inside */
@@ -526,7 +527,7 @@ drreg_restore_all_helper(void *drcontext, instrlist_t *bb, instr_t *inst,
     reg_id_t xmm_block_reg;
     instr_t *next = instr_get_next(inst);
     bool restored_for_read[DR_NUM_GPR_REGS];
-    bool restored_for_xmm_read[NUM_SIMD_SLOTS];
+    bool restored_for_xmm_read[MCXT_NUM_SIMD_SLOTS];
     drreg_status_t res;
     dr_pred_type_t pred = instrlist_get_auto_predicate(bb);
 
@@ -810,7 +811,9 @@ drreg_restore_all_helper(void *drcontext, instrlist_t *bb, instr_t *inst,
                 /* Don't bother if reg is dead beyond this write */
                 (ops.conservative || pt->live_idx == 0 ||
                  drvector_get_entry(&pt->reg[GPR_IDX(reg)].live, pt->live_idx - 1) ==
-                     REG_LIVE || pt->aflags.xchg == reg)) {
+                     REG_LIVE ||
+                 pt->aflags.xchg == reg)) {
+
                 uint tmp_slot = MAX_SPILLS;
                 if (pt->aflags.xchg == reg) {
                     /* Bail on keeping the flags in the reg. */
@@ -1035,8 +1038,8 @@ drreg_init_and_fill_xmm_vector(drvector_t *vec, bool allowed)
     reg_id_t reg;
     if (vec == NULL)
         return DRREG_ERROR_INVALID_PARAMETER;
-    drvector_init(vec, NUM_SIMD_SLOTS, false /*!synch*/, NULL);
-    for (reg = 0; reg < NUM_SIMD_SLOTS; reg++)
+    drvector_init(vec, MCXT_NUM_SIMD_SLOTS, false /*!synch*/, NULL);
+    for (reg = 0; reg < MCXT_NUM_SIMD_SLOTS; reg++)
         drvector_set_entry(vec, reg, allowed ? (void *)(ptr_uint_t)1 : NULL);
     return DRREG_SUCCESS;
 }
@@ -2387,7 +2390,7 @@ drreg_event_restore_state(void *drcontext, bool restore_memory,
      */
     uint spilled_to[DR_NUM_GPR_REGS];
     uint spilled_to_aflags = MAX_SPILLS;
-    uint spilled_xmm_to[NUM_SIMD_SLOTS];
+    uint spilled_xmm_to[MCXT_NUM_SIMD_SLOTS];
     reg_id_t reg;
     instr_t inst;
     instr_t next_inst;

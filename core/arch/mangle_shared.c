@@ -1,5 +1,5 @@
 /* ******************************************************************************
- * Copyright (c) 2010-2018 Google, Inc.  All rights reserved.
+ * Copyright (c) 2010-2019 Google, Inc.  All rights reserved.
  * Copyright (c) 2010 Massachusetts Institute of Technology  All rights reserved.
  * Copyright (c) 2000-2010 VMware, Inc.  All rights reserved.
  * ******************************************************************************/
@@ -756,8 +756,11 @@ mangle_syscall_code(dcontext_t *dcontext, fragment_t *f, byte *pc, bool skip)
         LOG(THREAD, LOG_SYSCALLS, 3, "\tmodifying target of syscall jmp to " PFX "\n",
             target);
         instr_set_target(&instr, opnd_create_pc(target));
-        nxt_pc = instr_encode(dcontext, &instr, skip_pc);
-        ASSERT(nxt_pc != NULL && nxt_pc == cti_pc);
+        nxt_pc = instr_encode_to_copy(dcontext, &instr, vmcode_get_writable_addr(skip_pc),
+                                      skip_pc);
+        ASSERT(nxt_pc != NULL);
+        nxt_pc = vmcode_get_executable_addr(nxt_pc);
+        ASSERT(nxt_pc == cti_pc);
         machine_cache_sync(skip_pc, nxt_pc, true);
     } else {
         LOG(THREAD, LOG_SYSCALLS, 3, "\ttarget of syscall jmp is already " PFX "\n",
@@ -776,8 +779,8 @@ mangle_syscall_code(dcontext_t *dcontext, fragment_t *f, byte *pc, bool skip)
  * inserted instr -- but this slows down encoding in current implementation
  */
 void
-mangle(dcontext_t *dcontext, instrlist_t *ilist, uint *flags INOUT, bool mangle_calls,
-       bool record_translation)
+d_r_mangle(dcontext_t *dcontext, instrlist_t *ilist, uint *flags INOUT, bool mangle_calls,
+           bool record_translation)
 {
     instr_t *instr, *next_instr;
 #ifdef WINDOWS
