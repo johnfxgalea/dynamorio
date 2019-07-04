@@ -36,6 +36,7 @@
 #define DRBBDUP_XAX_REG_SLOT 1
 #define DRBBDUP_FLAG_REG_SLOT 2
 #define DRBBDUP_HIT_TABLE_SLOT 3
+#define DRBBDUP_RETURN_SLOT 4
 
 // Comment out macro for no stats
 //#define ENABLE_STATS 1
@@ -219,15 +220,6 @@ static void drbbdup_restore_register(void *drcontext, instrlist_t *ilist,
     instrlist_meta_preinsert(ilist, where, instr);
 }
 
-static reg_t drbbdup_get_spilled(int slot_idx) {
-
-    byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
-            + (slot_idx * (sizeof(void *))));
-
-    void **value = (void **) addr;
-    return (reg_t) *value;
-}
-
 /************************************************************************
  * DUPlICATION PHASE
  *
@@ -278,7 +270,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-    drbbdup_stat_inc_bb();
+        drbbdup_stat_inc_bb();
 #endif
 
     /* If the first instruction is a branch statement, we simply return.
@@ -294,7 +286,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         DR_ASSERT(manager == NULL);
 #ifdef ENABLE_STATS
         if (!translating)
-        drbbdup_stat_inc_non_applicable();
+            drbbdup_stat_inc_non_applicable();
 #endif
         return DR_EMIT_DEFAULT;
     }
@@ -314,7 +306,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
         if (!translating)
-        drbbdup_stat_inc_non_applicable();
+            drbbdup_stat_inc_non_applicable();
 #endif
 
         DR_ASSERT(manager == NULL);
@@ -324,7 +316,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-    drbbdup_stat_inc_bb_size(cur_size);
+        drbbdup_stat_inc_bb_size(cur_size);
 #endif
 
     /* Example:
@@ -424,13 +416,13 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-    drbbdup_stat_inc_instrum_bb();
+        drbbdup_stat_inc_instrum_bb();
 #endif
 
 #ifdef ENABLE_STATS
     if (!manager->manager_opts.enable_dynamic_fp) {
         if (!translating)
-        drbbdup_stat_no_fp();
+            drbbdup_stat_no_fp();
     }
 #endif
 
@@ -909,9 +901,23 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
                 opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
         instrlist_meta_preinsert(bb, where, instr);
 
+        instr_t *return_label = INSTR_CREATE_label(drcontext);
+
+        opnd_t return_opnd = drbbdup_get_tls_raw_slot_opnd(DRBBDUP_RETURN_SLOT);
+        instrlist_insert_mov_instr_addr(drcontext, return_label, NULL,
+                return_opnd, bb, where, NULL, NULL);
+
         opnd = opnd_create_pc(fp_cache_pc);
         instr = INSTR_CREATE_jmp(drcontext, opnd);
         instrlist_meta_preinsert(bb, where, instr);
+
+        opnd = opnd_create_pc(fp_cache_pc);
+        instr = INSTR_CREATE_jmp(drcontext, opnd);
+        instrlist_meta_preinsert(bb, where, instr);
+
+        instrlist_meta_preinsert(bb, where, return_label);
+
+        return;
     }
 
 #ifdef ENABLE_STATS
@@ -1121,7 +1127,6 @@ static void drbbdup_handle_new_case() {
     reg_t conditional_val = (reg_t) drbbdup_get_comparator();
 
     /* Look up case manager */
-
     drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
             &(pt->case_manager_table), bb_pc);
 
@@ -1149,7 +1154,6 @@ static void drbbdup_handle_new_case() {
                 manager->cases[i].is_defined = true;
                 manager->cases[i].condition_val =
                         (unsigned int) (uintptr_t) conditional_val;
-
                 break;
             }
         }
@@ -1166,7 +1170,6 @@ static void drbbdup_handle_new_case() {
      * then lead DR to emit a new bb. This time, the bb will include the handle
      * for our new case which is tracked by the manager.
      */
-
     /* Increment now, otherwise our delete fragment event will remove the manager */
 
     int prev_counter = manager->ref_counter;
@@ -1182,30 +1185,7 @@ static void drbbdup_handle_new_case() {
     }
     DR_ASSERT(succ);
 
-    if (!manager->is_eflag_dead) {
-
-        // Eflag restoration is taken from drreg. Should move it upon release.
-        reg_t newval = mcontext.xflags;
-        reg_t val;
-        uint sahf;
-
-        val = drbbdup_get_spilled(DRBBDUP_FLAG_REG_SLOT);
-        sahf = (val & 0xff00) >> 8;
-        newval &= ~(EFLAGS_ARITH);
-        newval |= sahf;
-        if (TEST(1, val)) /* seto */
-            newval |= EFLAGS_OF;
-        mcontext.xflags = newval;
-    }
-
-    if (!manager->is_xax_dead)
-        reg_set_value(DR_REG_XAX, &mcontext,
-                drbbdup_get_spilled(DRBBDUP_XAX_REG_SLOT));
-
-    mcontext.pc = bb_pc;
-
-    bool redirected = dr_redirect_execution(&mcontext);
-    DR_ASSERT(redirected);
+    /* Delete fragment allows us to continue */
 }
 
 static app_pc init_fp_cache() {
@@ -1213,13 +1193,19 @@ static app_pc init_fp_cache() {
     app_pc cache_pc;
     instrlist_t *ilist;
     size_t size;
+    instr_t *where;
 
     void *drcontext = dr_get_current_drcontext();
 
     ilist = instrlist_create(drcontext);
 
-    dr_insert_clean_call(drcontext, ilist, NULL, drbbdup_handle_new_case, false,
-            0);
+    opnd_t return_data_opnd = drbbdup_get_tls_raw_slot_opnd(
+            DRBBDUP_RETURN_SLOT);
+    where = INSTR_CREATE_jmp_ind(drcontext, return_data_opnd);
+    instrlist_meta_append(ilist, where);
+
+    dr_insert_clean_call(drcontext, ilist, where, drbbdup_handle_new_case,
+            false, 0);
 
     size = dr_page_size();
 
@@ -1404,8 +1390,6 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
 
     if (drbbdup_ref_count == 0) {
 
-        fp_cache_pc = init_fp_cache();
-
         drbbdup_set_options(ops_in, fp_settings);
 
         drreg_options_t drreg_ops = { sizeof(drreg_ops), 5, false, NULL, true };
@@ -1432,8 +1416,9 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
         if (tls_idx == -1)
             return DRBBDUP_ERROR;
 
-        /* We make use of three slots for spillage */
-        dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 4, 0);
+        dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 5, 0);
+
+        fp_cache_pc = init_fp_cache();
 
 #ifdef ENABLE_STATS
         case_num = dr_global_alloc(
@@ -1477,7 +1462,7 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
                 || !drmgr_unregister_thread_exit_event(drbbdup_thread_exit))
             return DRBBDUP_ERROR;
 
-        dr_raw_tls_cfree(tls_raw_base, 4);
+        dr_raw_tls_cfree(tls_raw_base, 5);
         drmgr_unregister_tls_field(tls_idx);
         dr_unregister_delete_event(deleted_frag);
         drreg_exit();
@@ -1560,7 +1545,7 @@ static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
         instr_t *where, int case_index) {
 
     dr_insert_clean_call(drcontext, bb, where, clean_call_case_entry, false, 1,
-            OPND_CREATE_INTPTR(case_index));
+    OPND_CREATE_INTPTR(case_index));
 }
 
 static void clean_call_bail_entry() {
@@ -1599,15 +1584,15 @@ static void drbbdup_stat_print_stats() {
     dr_fprintf(STDERR, "Number of BB instrumented: %lu\n", bb_instrumented);
 
     if (bb_instrumented != 0)
-    dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
-            total_size / bb_instrumented);
+        dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
+                total_size / bb_instrumented);
 
     dr_fprintf(STDERR, "Number of fast paths generated (bb): %lu\n", gen_num);
     dr_fprintf(STDERR, "Total bb exec: %lu\n", total_exec);
     dr_fprintf(STDERR, "Total bails: %lu\n", total_bails);
 
     for (int i = 0; i < opts.fp_settings.dup_limit + 1; i++)
-    dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
+        dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
 
     dr_fprintf(STDERR, "---------------------------\n");
 
