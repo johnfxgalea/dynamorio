@@ -29,14 +29,12 @@
 #endif
 
 #define HASH_BIT_TABLE 8
-#define HIT_COUNT_TABLE_SIZE 65536
 
 /* THREAD SLOTS */
 #define DRBBDUP_COMPARATOR_SLOT 0
 #define DRBBDUP_XAX_REG_SLOT 1
 #define DRBBDUP_FLAG_REG_SLOT 2
-#define DRBBDUP_HIT_TABLE_SLOT 3
-#define DRBBDUP_RETURN_SLOT 4
+#define DRBBDUP_RETURN_SLOT 3
 
 // Comment out macro for no stats
 //#define ENABLE_STATS 1
@@ -63,6 +61,7 @@ typedef struct {
     bool is_eflag_dead;
     bool is_xax_dead;
     drbbdup_manager_options_t manager_opts;
+    uint hit_count;
 } drbbdup_manager_t;
 
 /**
@@ -81,7 +80,6 @@ typedef struct {
     int case_index;
     void *pre_analysis_data;
     void **instrum_infos;
-    uint8_t hit_counts[HIT_COUNT_TABLE_SIZE];
 
 } drbbdup_per_thread;
 
@@ -169,14 +167,6 @@ static opnd_t drbbdup_get_tls_raw_slot_opnd(int slot_idx) {
     return opnd_create_far_base_disp_ex(tls_raw_reg, REG_NULL, REG_NULL, 1,
             tls_raw_base + (slot_idx * (sizeof(void *))),
             OPSZ_PTR, false, true, false);
-}
-
-static uint drbbdup_get_hitcount_hash(intptr_t bb_id) {
-
-    uint hash = ((uint) bb_id) << 1;
-    hash &= (HIT_COUNT_TABLE_SIZE - 1);
-    DR_ASSERT(hash < HIT_COUNT_TABLE_SIZE);
-    return hash;
 }
 
 /**
@@ -270,7 +260,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-        drbbdup_stat_inc_bb();
+    drbbdup_stat_inc_bb();
 #endif
 
     /* If the first instruction is a branch statement, we simply return.
@@ -286,7 +276,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         DR_ASSERT(manager == NULL);
 #ifdef ENABLE_STATS
         if (!translating)
-            drbbdup_stat_inc_non_applicable();
+        drbbdup_stat_inc_non_applicable();
 #endif
         return DR_EMIT_DEFAULT;
     }
@@ -306,7 +296,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
         if (!translating)
-            drbbdup_stat_inc_non_applicable();
+        drbbdup_stat_inc_non_applicable();
 #endif
 
         DR_ASSERT(manager == NULL);
@@ -316,7 +306,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-        drbbdup_stat_inc_bb_size(cur_size);
+    drbbdup_stat_inc_bb_size(cur_size);
 #endif
 
     /* Example:
@@ -374,6 +364,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         manager->manager_opts.enable_dynamic_fp = true;
         manager->manager_opts.enable_pop_threshold = false;
         manager->manager_opts.max_pop_threshold = 0;
+        manager->hit_count = opts.fp_settings.hit_gen_threshold;
         uint default_case_val = 0;
 
         bool consider = opts.functions.create_manager(manager, drcontext,
@@ -416,13 +407,13 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!translating)
-        drbbdup_stat_inc_instrum_bb();
+    drbbdup_stat_inc_instrum_bb();
 #endif
 
 #ifdef ENABLE_STATS
     if (!manager->manager_opts.enable_dynamic_fp) {
         if (!translating)
-            drbbdup_stat_no_fp();
+        drbbdup_stat_no_fp();
     }
 #endif
 
@@ -872,22 +863,11 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
 
         if (opts.fp_settings.hit_gen_threshold > 0) {
 
-            opnd_t hit_table_opnd;
-            hit_table_opnd = drbbdup_get_tls_raw_slot_opnd(
-            DRBBDUP_HIT_TABLE_SLOT);
-
-            /* Load the hit counter table */
-            instr = INSTR_CREATE_mov_ld(drcontext, scratch_reg_opnd,
-                    hit_table_opnd);
-            instrlist_meta_preinsert(bb, where, instr);
-
-            uint hash = drbbdup_get_hitcount_hash((intptr_t) translation);
-            opnd_t hit_count_opnd = OPND_CREATE_MEM8(DR_REG_XAX,
-                    hash * sizeof(uint8_t));
-
+            opnd_t hit_table_opnd = opnd_create_abs_addr(
+                    (void *) &(manager->hit_count), OPSZ_4);
             /* Decrement hit counter */
-            opnd = opnd_create_immed_int(1, OPSZ_1);
-            instr = INSTR_CREATE_sub(drcontext, hit_count_opnd, opnd);
+            opnd = opnd_create_immed_int(1, OPSZ_4);
+            instr = INSTR_CREATE_sub(drcontext, hit_table_opnd, opnd);
             instrlist_meta_preinsert(bb, where, instr);
 
             /* If counter has NOT reached threshold, jmp to default */
@@ -916,8 +896,6 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
         instrlist_meta_preinsert(bb, where, instr);
 
         instrlist_meta_preinsert(bb, where, return_label);
-
-        return;
     }
 
 #ifdef ENABLE_STATS
@@ -1135,9 +1113,8 @@ static void drbbdup_handle_new_case() {
 
     /* Refresh hit counter*/
     if (opts.fp_settings.hit_gen_threshold > 0) {
-        uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
-        DR_ASSERT(pt->hit_counts[hash] == 0);
-        pt->hit_counts[hash] = opts.fp_settings.hit_gen_threshold;
+        DR_ASSERT(manager->hit_count == 0);
+        manager->hit_count = opts.fp_settings.hit_gen_threshold;
     }
 
     /* Find an undefined case, and set it up for the new conditional. */
@@ -1200,12 +1177,12 @@ static app_pc init_fp_cache() {
     ilist = instrlist_create(drcontext);
 
     opnd_t return_data_opnd = drbbdup_get_tls_raw_slot_opnd(
-            DRBBDUP_RETURN_SLOT);
+    DRBBDUP_RETURN_SLOT);
     where = INSTR_CREATE_jmp_ind(drcontext, return_data_opnd);
     instrlist_meta_append(ilist, where);
 
     dr_insert_clean_call(drcontext, ilist, where, drbbdup_handle_new_case,
-            false, 0);
+    false, 0);
 
     size = dr_page_size();
 
@@ -1330,17 +1307,7 @@ static void drbbdup_thread_init(void *drcontext) {
      * basic block.
      */
     hashtable_init_ex(&(pt->case_manager_table), HASH_BIT_TABLE, HASH_INTPTR,
-    false,
-    false, drbbdup_destroy_manager, NULL, NULL);
-
-    for (int i = 0; i < HIT_COUNT_TABLE_SIZE; i++) {
-        pt->hit_counts[i] = opts.fp_settings.hit_gen_threshold;
-    }
-
-    byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
-            + (DRBBDUP_HIT_TABLE_SLOT * (sizeof(void *))));
-    void **addr_hitcount = (void **) addr;
-    *addr_hitcount = pt->hit_counts;
+    false, false, drbbdup_destroy_manager, NULL, NULL);
 
     drmgr_set_tls_field(drcontext, tls_idx, (void *) pt);
 }
@@ -1370,7 +1337,7 @@ static void drbbdup_set_options(drbbdup_options_t *ops_in,
     if (fp_settings_in == NULL) {
         /* Set default values for fp settings */
         opts.fp_settings.dup_limit = 3;
-        opts.fp_settings.hit_gen_threshold = 40;
+        opts.fp_settings.hit_gen_threshold = 100000;
         opts.fp_settings.required_size = 0;
     } else {
         memcpy(&(opts.fp_settings), fp_settings_in,
@@ -1416,7 +1383,7 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
         if (tls_idx == -1)
             return DRBBDUP_ERROR;
 
-        dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 5, 0);
+        dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 4, 0);
 
         fp_cache_pc = init_fp_cache();
 
@@ -1462,7 +1429,7 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
                 || !drmgr_unregister_thread_exit_event(drbbdup_thread_exit))
             return DRBBDUP_ERROR;
 
-        dr_raw_tls_cfree(tls_raw_base, 5);
+        dr_raw_tls_cfree(tls_raw_base, 4);
         drmgr_unregister_tls_field(tls_idx);
         dr_unregister_delete_event(deleted_frag);
         drreg_exit();
@@ -1545,7 +1512,7 @@ static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
         instr_t *where, int case_index) {
 
     dr_insert_clean_call(drcontext, bb, where, clean_call_case_entry, false, 1,
-    OPND_CREATE_INTPTR(case_index));
+            OPND_CREATE_INTPTR(case_index));
 }
 
 static void clean_call_bail_entry() {
@@ -1584,15 +1551,15 @@ static void drbbdup_stat_print_stats() {
     dr_fprintf(STDERR, "Number of BB instrumented: %lu\n", bb_instrumented);
 
     if (bb_instrumented != 0)
-        dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
-                total_size / bb_instrumented);
+    dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
+            total_size / bb_instrumented);
 
     dr_fprintf(STDERR, "Number of fast paths generated (bb): %lu\n", gen_num);
     dr_fprintf(STDERR, "Total bb exec: %lu\n", total_exec);
     dr_fprintf(STDERR, "Total bails: %lu\n", total_bails);
 
     for (int i = 0; i < opts.fp_settings.dup_limit + 1; i++)
-        dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
+    dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
 
     dr_fprintf(STDERR, "---------------------------\n");
 
@@ -1605,14 +1572,14 @@ void record_sample(void *drcontext, dr_mcontext_t *mcontext) {
 
     unsigned long new_fp_taint_num = 0;
     for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
-        new_fp_taint_num += case_num[i];
+    new_fp_taint_num += case_num[i];
 
     new_fp_taint_num = new_fp_taint_num - prev_full_taint_num;
     unsigned long new_fp_gen = gen_num - prev_fp_gen;
 
     prev_full_taint_num = 0;
     for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
-        prev_full_taint_num += case_num[i];
+    prev_full_taint_num += case_num[i];
 
     prev_fp_gen = gen_num;
 
