@@ -818,6 +818,7 @@ free_all_callback_lists()
     free_callback_list(&pre_syscall_callbacks);
     free_callback_list(&post_syscall_callbacks);
     free_callback_list(&kernel_xfer_callbacks);
+    free_callback_list(&low_on_memory_callbacks);
 #    ifdef WINDOWS
     free_callback_list(&exception_callbacks);
 #    else
