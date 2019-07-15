@@ -196,7 +196,7 @@ DR_EXPORT opnd_t drbbdup_get_comparator_opnd() {
 
 static uint drbbdup_get_hitcount_hash(intptr_t bb_id) {
 
-    uint hash = ((uint) bb_id) << 1;
+    uint hash = ((uint) bb_id) >> 1;
     hash &= (HIT_COUNT_TABLE_SIZE - 1);
     DR_ASSERT(hash < HIT_COUNT_TABLE_SIZE);
     return hash;
@@ -879,17 +879,13 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
                 opnd_create_immed_int((intptr_t) translation, OPSZ_PTR));
         instrlist_meta_preinsert(bb, where, instr);
 
-        instr_t *return_label = INSTR_CREATE_label(drcontext);
-
         opnd_t return_opnd = drbbdup_get_tls_raw_slot_opnd(DRBBDUP_RETURN_SLOT);
-        instrlist_insert_mov_instr_addr(drcontext, return_label, NULL,
+        instrlist_insert_mov_instr_addr(drcontext, labels[0], NULL,
                 return_opnd, bb, where, NULL, NULL);
 
         opnd = opnd_create_pc(fp_cache_pc);
         instr = INSTR_CREATE_jmp(drcontext, opnd);
         instrlist_meta_preinsert(bb, where, instr);
-
-        instrlist_meta_preinsert(bb, where, return_label);
     }
 
 #ifdef ENABLE_STATS
