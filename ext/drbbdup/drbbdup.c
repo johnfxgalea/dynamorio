@@ -1221,6 +1221,7 @@ static void deleted_frag(void *drcontext, void *tag) {
 
     app_pc bb_pc = dr_fragment_app_pc(tag);
 
+    dr_mutex_lock(mutex);
     drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
             &(case_manager_table), bb_pc);
 
@@ -1233,6 +1234,8 @@ static void deleted_frag(void *drcontext, void *tag) {
             DR_ASSERT(is_removed);
         }
     }
+    dr_mutex_unlock(mutex);
+
 }
 
 /************************************************************************
