@@ -1158,6 +1158,7 @@ static void drbbdup_handle_new_case() {
 
     DR_ASSERT(!manager->fp_flag);
     manager->fp_flag = true;
+    manager->ref_counter++;
 
     // We hold locks! We will use a delayed flushing!
     if (!dr_delay_flush_region(bb_pc, 1, 0, NULL))
@@ -1226,7 +1227,7 @@ static void deleted_frag(void *drcontext, void *tag) {
     drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
             &(case_manager_table), bb_pc);
 
-    if (manager && !manager->fp_flag) {
+    if (manager) {
         DR_ASSERT(manager->ref_counter > 0);
         manager->ref_counter--;
 
