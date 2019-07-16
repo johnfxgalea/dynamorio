@@ -259,7 +259,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
             &(pt->case_manager_table), pc);
 
 #ifdef ENABLE_STATS
-    if (!translating)
     drbbdup_stat_inc_bb();
 #endif
 
@@ -275,7 +274,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
         DR_ASSERT(manager == NULL);
 #ifdef ENABLE_STATS
-        if (!translating)
         drbbdup_stat_inc_non_applicable();
 #endif
         return DR_EMIT_DEFAULT;
@@ -295,7 +293,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     if (cur_size < opts.fp_settings.required_size) {
 
 #ifdef ENABLE_STATS
-        if (!translating)
         drbbdup_stat_inc_non_applicable();
 #endif
 
@@ -305,7 +302,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     }
 
 #ifdef ENABLE_STATS
-    if (!translating)
     drbbdup_stat_inc_bb_size(cur_size);
 #endif
 
@@ -393,28 +389,21 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
     } else {
 
-        if (!translating) {
-            if (!translating && !manager->fp_flag) {
-                manager->ref_counter++;
-            }
-
+        if (!manager->fp_flag) {
+            manager->ref_counter++;
         }
     }
 
     manager->fp_flag = false;
-
     DR_ASSERT(manager != NULL);
 
 #ifdef ENABLE_STATS
-    if (!translating)
     drbbdup_stat_inc_instrum_bb();
 #endif
 
 #ifdef ENABLE_STATS
-    if (!manager->manager_opts.enable_dynamic_fp) {
-        if (!translating)
+    if (!manager->manager_opts.enable_dynamic_fp)
         drbbdup_stat_no_fp();
-    }
 #endif
 
     /**
@@ -473,7 +462,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
          * have different registers spilled!
          */
         drreg_set_bb_properties(drcontext, DRREG_IGNORE_BB_END_RESTORE);
-
         instrlist_meta_postinsert(bb, instrlist_last(bb), exit_label);
     }
 
@@ -863,6 +851,7 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
 
         if (opts.fp_settings.hit_gen_threshold > 0) {
 
+            /* Since cache is thread private, we can use direct access. No collisions! */
             opnd_t hit_table_opnd = opnd_create_abs_addr(
                     (void *) &(manager->hit_count), OPSZ_4);
             /* Decrement hit counter */
@@ -1122,7 +1111,6 @@ static void drbbdup_handle_new_case() {
     /* Check whether the default case is actually the missing case. */
     if (manager->default_case.condition_val
             != (unsigned int) (uintptr_t) conditional_val) {
-
         int i;
         for (i = 0; i < opts.fp_settings.dup_limit; i++) {
 
@@ -1139,6 +1127,11 @@ static void drbbdup_handle_new_case() {
     LOG(drcontext, DR_LOG_ALL, 2, "%s Found new taint case! I am about to flush for %p\n",
             __FUNCTION__, bb_pc);
 
+    /* Increment now, otherwise our delete fragment event will remove the manager */
+    DR_ASSERT(!manager->fp_flag);
+    manager->ref_counter++;
+    manager->fp_flag = true;
+
     /**
      * This is an important step.
      *
@@ -1147,19 +1140,8 @@ static void drbbdup_handle_new_case() {
      * then lead DR to emit a new bb. This time, the bb will include the handle
      * for our new case which is tracked by the manager.
      */
-    /* Increment now, otherwise our delete fragment event will remove the manager */
-
-    int prev_counter = manager->ref_counter;
-    int prev_fp_flag = manager->fp_flag;
-
-    DR_ASSERT(!manager->fp_flag);
-    manager->ref_counter++;
-    manager->fp_flag = true;
 
     bool succ = dr_delete_fragment(drcontext, tag);
-    if (!succ) {
-        dr_fprintf(STDERR, "FAILED: %d %d\n", prev_counter, prev_fp_flag);
-    }
     DR_ASSERT(succ);
 
     /* Delete fragment allows us to continue */
@@ -1566,6 +1548,7 @@ static void drbbdup_stat_print_stats() {
 }
 
 unsigned long sample_count = 0;
+
 void record_sample(void *drcontext, dr_mcontext_t *mcontext) {
 
     dr_mutex_lock(stat_mutex);
@@ -1586,10 +1569,8 @@ void record_sample(void *drcontext, dr_mcontext_t *mcontext) {
     dr_fprintf(STDERR, "(%lu,%lu) (%lu,%lu)\n", sample_count, new_fp_taint_num,
             sample_count, new_fp_gen);
 
-    dr_mutex_unlock(stat_mutex);
-
     sample_count++;
-
+    dr_mutex_unlock(stat_mutex);
 }
 
 static void sample_thread(void *arg) {
