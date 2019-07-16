@@ -261,6 +261,25 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     /* Use the PC of the fragment as the key */
     app_pc pc = dr_fragment_app_pc(tag);
 
+    instr_t *instr = instrlist_first(bb);
+    size_t cur_size = 0;
+    for (instr = instrlist_first_app(bb); instr != NULL; instr =
+            instr_get_next_app(instr))
+        cur_size++;
+
+
+    /* We create a duplication here to keep track of original bb */
+    instrlist_t *original = instrlist_clone(drcontext, bb);
+    instr_t *last = instrlist_last_app(original);
+    /**
+     * If the last instruction is a sytem call/cti, we remove it from the original.
+     * This is done so we do not duplicate these instructions and abide by DR rules.
+     */
+    if (instr_is_syscall(last) || instr_is_cti(last) || instr_is_ubr(last)) {
+        instrlist_remove(original, last);
+        instr_destroy(drcontext, last);
+    }
+
     dr_mutex_lock(mutex);
 
     /* Fetch new case manager */
@@ -282,6 +301,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         drbbdup_stat_inc_non_applicable();
 #endif
         dr_mutex_unlock(mutex);
+        instrlist_clear_and_destroy(drcontext, original);
         return DR_EMIT_DEFAULT;
     }
 
@@ -291,10 +311,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
      * The intuition here is that small bbs might as well have propagation attempted
      * instead of generating fast paths.
      */
-    size_t cur_size = 0;
-    for (first = instrlist_first_app(bb); first != NULL; first =
-            instr_get_next_app(first))
-        cur_size++;
 
     if (cur_size < opts.fp_settings.required_size) {
         /** Too small. **/
@@ -303,6 +319,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 #endif
         DR_ASSERT(manager == NULL);
         dr_mutex_unlock(mutex);
+        instrlist_clear_and_destroy(drcontext, original);
         return DR_EMIT_DEFAULT;
     }
 
@@ -338,19 +355,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
      * DR Developers needed to do this for unrolling rep.
      */
 
-    /* We create a duplication here to keep track of original bb */
-    instrlist_t *original = instrlist_clone(drcontext, bb);
-    instr_t *last = instrlist_last_app(original);
-
-    /**
-     * If the last instruction is a sytem call/cti, we remove it from the original.
-     * This is done so we do not duplicate these instructions and abide by DR rules.
-     */
-    if (instr_is_syscall(last) || instr_is_cti(last) || instr_is_ubr(last)) {
-        instrlist_remove(original, last);
-        instr_destroy(drcontext, last);
-    }
-
     if (manager == NULL) {
         /* If manager is not available, we need to create a default one. */
         manager = dr_global_alloc(sizeof(drbbdup_manager_t));
@@ -375,15 +379,14 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 #ifdef ENABLE_STATS
             drbbdup_stat_inc_non_applicable();
 #endif
-
-            instrlist_clear_and_destroy(drcontext, original);
-
             /** Destroy the manager. **/
             dr_global_free(manager->cases,
                     sizeof(drbbdup_case_t) * opts.fp_settings.dup_limit);
             dr_global_free(manager, sizeof(drbbdup_manager_t));
 
             dr_mutex_unlock(mutex);
+            instrlist_clear_and_destroy(drcontext, original);
+
             return DR_EMIT_DEFAULT;
         }
 
@@ -397,6 +400,9 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     }
 
     manager->fp_flag = false;
+    /* Let's perform the duplication */
+    uint total_dups = drbbdup_count_dups(manager) + 1;
+    dr_mutex_unlock(mutex);
 
     DR_ASSERT(manager != NULL);
 
@@ -425,9 +431,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     instr_t *label = INSTR_CREATE_label(drcontext);
     instr_set_note(label, (void *) (intptr_t) DRBBDUP_LABEL_NORMAL);
     instrlist_meta_preinsert(bb, instrlist_first(bb), label);
-
-    /* Let's perform the duplication */
-    uint total_dups = drbbdup_count_dups(manager) + 1;
 
     /* Now add dups for the cases.*/
     int i;
@@ -467,7 +470,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         instrlist_meta_postinsert(bb, instrlist_last(bb), exit_label);
     }
 
-    dr_mutex_unlock(mutex);
     return DR_EMIT_STORE_TRANSLATIONS;
 }
 
@@ -552,7 +554,7 @@ drbbdup_derive_case_bb(void *drcontext, instrlist_t *bb, instr_t **start) {
      */}
 
 static void drbbdup_handle_pre_analysis(void *drcontext, instrlist_t *bb,
-        instr_t *strt, drbbdup_manager_t *manager, void **pre_analysis_data) {
+        instr_t *strt, void **pre_analysis_data) {
 
     DR_ASSERT(pre_analysis_data);
 
@@ -605,7 +607,7 @@ static void drbbdup_analyse_bbs(void *drcontext, drbbdup_per_thread *pt,
     DR_ASSERT(case_info);
     DR_ASSERT(case_info->is_defined);
 
-    drbbdup_handle_pre_analysis(drcontext, bb, strt, manager,
+    drbbdup_handle_pre_analysis(drcontext, bb, strt,
             &(pt->pre_analysis_data));
 
     /* Handle default case */
@@ -631,7 +633,6 @@ static dr_emit_flags_t drbbdup_analyse_phase(void *drcontext, void *tag,
     app_pc pc = dr_fragment_app_pc(tag);
 
     dr_mutex_lock(mutex);
-
     /* Fetch hashtable */
     drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
             &(case_manager_table), pc);
