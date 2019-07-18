@@ -51,6 +51,7 @@ typedef struct {
 typedef struct {
     unsigned int condition_val;
     bool is_defined;
+    bool skip_post;
 } drbbdup_case_t;
 
 typedef struct {
@@ -68,6 +69,8 @@ typedef struct {
  * Label types.
  */
 typedef enum {
+    /* The last label denoting the end of duplicated blocks */
+    DRBBDUP_LABEL_POST = 76,
     /* The last label denoting the end of duplicated blocks */
     DRBBDUP_LABEL_EXIT = 77,
     /* A label denoting the start/end of a duplicated block */
@@ -164,6 +167,7 @@ void *stat_mutex = NULL;
  */
 
 static opnd_t drbbdup_get_tls_raw_slot_opnd(int slot_idx) {
+
     return opnd_create_far_base_disp_ex(tls_raw_reg, REG_NULL, REG_NULL, 1,
             tls_raw_base + (slot_idx * (sizeof(void *))),
             OPSZ_PTR, false, true, false);
@@ -362,10 +366,11 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         manager->manager_opts.max_pop_threshold = 0;
         manager->hit_count = opts.fp_settings.hit_gen_threshold;
         uint default_case_val = 0;
+        bool default_skip_post = 0;
 
         bool consider = opts.functions.create_manager(manager, drcontext,
                 original, &(manager->manager_opts), &default_case_val,
-                opts.functions.user_data);
+                &default_skip_post, opts.functions.user_data);
 
         if (!consider) {
             /** The users doesn't want fast path for this bb. **/
@@ -384,6 +389,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
         manager->default_case.is_defined = true;
         manager->default_case.condition_val = default_case_val;
+        manager->default_case.skip_post = default_skip_post;
         manager->ref_counter = 1;
         hashtable_add(&(pt->case_manager_table), pc, manager);
 
@@ -403,49 +409,73 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!manager->manager_opts.enable_dynamic_fp)
-        drbbdup_stat_no_fp();
+    drbbdup_stat_no_fp();
 #endif
 
     /**
      * Tell drreg to ignore control flow, we are ensuring registers
      * are live at start of BBs.
-     *
      */
     drreg_set_bb_properties(drcontext, DRREG_IGNORE_CONTROL_FLOW);
+
+    /* Create post label */
+    instr_t *post_label = INSTR_CREATE_label(drcontext);
+    opnd_t post_label_opnd = opnd_create_instr(post_label);
+    instr_set_note(post_label, (void *) (intptr_t) DRBBDUP_LABEL_POST);
 
     /* Create exit label */
     instr_t *exit_label = INSTR_CREATE_label(drcontext);
     opnd_t exit_label_opnd = opnd_create_instr(exit_label);
     instr_set_note(exit_label, (void *) (intptr_t) DRBBDUP_LABEL_EXIT);
 
-    /* Add the label of the first bb code that is already in place. */
+    /** Prepend the Label **/
     instr_t *label = INSTR_CREATE_label(drcontext);
     instr_set_note(label, (void *) (intptr_t) DRBBDUP_LABEL_NORMAL);
     instrlist_meta_preinsert(bb, instrlist_first(bb), label);
 
     /* Let's perform the duplication */
-    uint total_dups = drbbdup_count_dups(manager) + 1;
+    int total_dups = (int) drbbdup_count_dups(manager) + 1;
     DR_ASSERT(total_dups >= 1);
 
     /* Now add dups for the cases.*/
+    bool skip_post = false;
     int i;
-    for (i = 1; i < total_dups; i++) {
+    for (i = total_dups - 2; i >= 0; i--) {
 
-        /** Add the jmp to exit **/
-        instr_t *jmp_exit = INSTR_CREATE_jmp(drcontext, exit_label_opnd);
-        instrlist_preinsert(bb, instrlist_first(bb), jmp_exit);
+        if (i == 0) {
+            skip_post = manager->default_case.skip_post;
+        } else {
+            skip_post = manager->cases[i - 1].skip_post;
+        }
+
+        if (skip_post) {
+            /** Add the jmp to exit **/
+            instr_t *jmp_exit = INSTR_CREATE_jmp(drcontext, exit_label_opnd);
+            instrlist_preinsert(bb, instrlist_first(bb), jmp_exit);
+        } else {
+            /** Add the jmp to exit **/
+            instr_t *jmp_post = INSTR_CREATE_jmp(drcontext, post_label_opnd);
+            instrlist_preinsert(bb, instrlist_first(bb), jmp_post);
+        }
 
         /** Prepend the duplication **/
         drbbdup_add_dup(drcontext, bb, original);
 
-        /** Lastly prepend the Label **/
+        /** Prepend the Label **/
         label = INSTR_CREATE_label(drcontext);
         instr_set_note(label, (void *) (intptr_t) DRBBDUP_LABEL_NORMAL);
         instrlist_meta_preinsert(bb, instrlist_first(bb), label);
+
     }
 
     /* Delete original. We are done from duplication. */
     instrlist_clear_and_destroy(drcontext, original);
+
+    if (total_dups - 1 == 0) {
+        skip_post = manager->default_case.skip_post;
+    } else {
+        skip_post = manager->cases[total_dups - 2].skip_post;
+    }
 
     /**
      * Add the exit label for the last instance of the bb.
@@ -453,7 +483,15 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
      */
     last = instrlist_last(bb);
     if (instr_is_syscall(last) || instr_is_cti(last) || instr_is_ubr(last)) {
-        instrlist_meta_preinsert(bb, instrlist_last(bb), exit_label);
+
+        if (skip_post) {
+            /** Add the jmp to exit **/
+            instr_t *jmp_exit = INSTR_CREATE_jmp(drcontext, exit_label_opnd);
+            instrlist_preinsert(bb, last, jmp_exit);
+        }
+
+        instrlist_meta_preinsert(bb, last, post_label);
+        instrlist_meta_preinsert(bb, last, exit_label);
     } else {
 
         /**
@@ -462,6 +500,14 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
          * have different registers spilled!
          */
         drreg_set_bb_properties(drcontext, DRREG_IGNORE_BB_END_RESTORE);
+
+        if (skip_post) {
+            /** Add the jmp to exit **/
+            instr_t *jmp_exit = INSTR_CREATE_jmp(drcontext, exit_label_opnd);
+            instrlist_postinsert(bb, instrlist_last(bb), jmp_exit);
+        }
+
+        instrlist_meta_postinsert(bb, instrlist_last(bb), post_label);
         instrlist_meta_postinsert(bb, instrlist_last(bb), exit_label);
     }
 
@@ -485,13 +531,17 @@ static bool drbbdup_is_at_end_ex(void *drcontext, instr_t *check_instr,
     /* Notes are inspected to check whether the label is relevant to drbbdup. */
     void *note = instr_get_note(check_instr);
 
-    if (note == (void *) DRBBDUP_LABEL_EXIT) {
+    if (note == (void *) DRBBDUP_LABEL_POST) {
 
-        *label_info = DRBBDUP_LABEL_EXIT;
+        *label_info = DRBBDUP_LABEL_POST;
         return true;
     } else if (note == (void *) DRBBDUP_LABEL_NORMAL) {
 
         *label_info = DRBBDUP_LABEL_NORMAL;
+        return true;
+    } else if (note == (void *) DRBBDUP_LABEL_EXIT) {
+
+        *label_info = DRBBDUP_LABEL_EXIT;
         return true;
     }
 
@@ -560,7 +610,7 @@ static void drbbdup_handle_pre_analysis(void *drcontext, instrlist_t *bb,
     if (!opts.functions.pre_analyse_bb)
         return;
 
-    DR_ASSERT(instr_get_note(strt) == (void * )DRBBDUP_LABEL_NORMAL);
+    DR_ASSERT(instr_get_note(strt) == (void * ) DRBBDUP_LABEL_NORMAL);
     strt = instr_get_next(strt);
 
     instrlist_t *case_bb = drbbdup_derive_case_bb(drcontext, bb, &strt);
@@ -870,21 +920,14 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
                 opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
         instrlist_meta_preinsert(bb, where, instr);
 
-        instr_t *return_label = INSTR_CREATE_label(drcontext);
-
         opnd_t return_opnd = drbbdup_get_tls_raw_slot_opnd(DRBBDUP_RETURN_SLOT);
-        instrlist_insert_mov_instr_addr(drcontext, return_label, NULL,
-                return_opnd, bb, where, NULL, NULL);
+        instrlist_insert_mov_instr_addr(drcontext, labels[0], NULL, return_opnd,
+                bb, where, NULL, NULL);
 
         opnd = opnd_create_pc(fp_cache_pc);
         instr = INSTR_CREATE_jmp(drcontext, opnd);
         instrlist_meta_preinsert(bb, where, instr);
 
-        opnd = opnd_create_pc(fp_cache_pc);
-        instr = INSTR_CREATE_jmp(drcontext, opnd);
-        instrlist_meta_preinsert(bb, where, instr);
-
-        instrlist_meta_preinsert(bb, where, return_label);
     }
 
 #ifdef ENABLE_STATS
@@ -957,13 +1000,27 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
                     pt->case_index);
 #endif
 
-        } else if (result && label_info == DRBBDUP_LABEL_EXIT) {
+        } else if (result && label_info == DRBBDUP_LABEL_POST) {
+
             DR_ASSERT(pt->case_index >= 0);
+
+            drreg_restore_all_now(drcontext, bb, instr);
+
+        } else if (result && label_info == DRBBDUP_LABEL_EXIT) {
 
             /* Set to -1 to always trigger default behaviour. */
             pt->case_index = -1;
-            drreg_restore_all_now(drcontext, bb, instr);
 
+            /* Set by POST handling */
+            DR_ASSERT(pt->case_index == -1);
+
+            if (opts.functions.post_handling) {
+                /* Insert post handling code */
+                opts.functions.post_handling(drcontext, bb, instr,
+                        opts.functions.user_data, pt->pre_analysis_data);
+
+                drreg_restore_all_now(drcontext, bb, instr);
+            }
         } else {
 
             /**
@@ -976,7 +1033,9 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
                         &label_info);
 
                 /* Include restoration before jmp instr */
-                if (result && label_info == DRBBDUP_LABEL_NORMAL) {
+                if (result
+                        && (label_info == DRBBDUP_LABEL_NORMAL
+                                || label_info == DRBBDUP_LABEL_POST)) {
                     drreg_restore_all_now(drcontext, bb, instr);
 
                     /* Don't bother instrumenting jmp exists of fast paths */
@@ -1227,7 +1286,7 @@ static void deleted_frag(void *drcontext, void *tag) {
  */
 
 DR_EXPORT drbbdup_status_t drbbdup_register_case_value(void *drbbdup_ctx,
-        uint case_val) {
+        uint case_val, bool skip_post) {
 
     drbbdup_manager_t *manager = (drbbdup_manager_t *) drbbdup_ctx;
 
@@ -1238,6 +1297,7 @@ DR_EXPORT drbbdup_status_t drbbdup_register_case_value(void *drbbdup_ctx,
 
             dup_case->is_defined = true;
             dup_case->condition_val = case_val;
+            dup_case->skip_post = skip_post;
             return DRBBDUP_SUCCESS;
         }
     }
