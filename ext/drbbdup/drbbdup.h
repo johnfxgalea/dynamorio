@@ -54,7 +54,7 @@ typedef struct {
  * TODO
  */
 typedef bool (*drbbdup_create_default_manager_t)(void *drbbdup_ctx,
-        void *drcontext, instrlist_t *bb, drbbdup_manager_options_t *options,
+        void *drcontext, void *tag, instrlist_t *bb, drbbdup_manager_options_t *options,
         uint *default_case_value, bool *skip_post, void *user_data);
 
 /**

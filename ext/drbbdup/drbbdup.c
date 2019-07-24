@@ -368,7 +368,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         uint default_case_val = 0;
         bool default_skip_post = 0;
 
-        bool consider = opts.functions.create_manager(manager, drcontext,
+        bool consider = opts.functions.create_manager(manager, drcontext, tag,
                 original, &(manager->manager_opts), &default_case_val,
                 &default_skip_post, opts.functions.user_data);
 
@@ -1140,7 +1140,7 @@ static void drbbdup_handle_new_case() {
 
     void *drcontext = dr_get_current_drcontext();
 
-    dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_ALL, };
+    dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_INTEGER, };
     dr_get_mcontext(drcontext, &mcontext);
 
     void *tag = (void *) reg_get_value(DR_REG_XAX, &mcontext);
