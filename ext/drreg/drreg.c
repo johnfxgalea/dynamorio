@@ -608,7 +608,10 @@ drreg_restore_all_helper(void *drcontext, instrlist_t *bb, instr_t *inst,
                     spill_xmm_reg(drcontext, pt, reg, tmp_slot, bb, inst, xmm_block_reg);
                     restore_xmm_reg(drcontext, pt, reg, pt->xmm_reg[XMM_IDX(reg)].slot,
                                     bb, inst, xmm_block_reg, false /*keep slot*/);
-                    drreg_unreserve_register(drcontext, bb, inst, xmm_block_reg);
+                    res = drreg_unreserve_register(drcontext, bb, inst, xmm_block_reg);
+
+                    if (res != DRREG_SUCCESS)
+                        return res;
 
                     res = drreg_reserve_reg_internal(drcontext, bb, next, NULL, false,
                                                      &xmm_block_reg);
@@ -661,6 +664,9 @@ drreg_restore_all_helper(void *drcontext, instrlist_t *bb, instr_t *inst,
                     res = drreg_restore_reg_now(drcontext, bb, inst, pt, reg);
                     if (res != DRREG_SUCCESS)
                         drreg_report_error(res, "lazy restore failed");
+
+                    LOG(drcontext, DR_LOG_ALL, 3, "the count is %d %s\n", pt->pending_unreserved, get_register_name(reg));
+
                     ASSERT(pt->pending_unreserved > 0, "should not go negative");
                     pt->pending_unreserved--;
                 } else if (pt->aflags.xchg == reg) {
@@ -2077,7 +2083,9 @@ drreg_restore_aflags(void *drcontext, instrlist_t *ilist, instr_t *where,
     } else if (pt->aflags.xchg == DR_REG_XAX) {
         if (release) {
             pt->aflags.xchg = DR_REG_NULL;
-            pt->reg[DR_REG_XAX - DR_REG_START_GPR].in_use = false;
+            res = drreg_unreserve_register(drcontext, ilist, where, DR_REG_XAX);
+
+//            pt->reg[DR_REG_XAX - DR_REG_START_GPR].in_use = false;
         }
     } else {
         if (ops.conservative ||

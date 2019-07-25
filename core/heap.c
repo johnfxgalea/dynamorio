@@ -1677,6 +1677,10 @@ vmm_heap_commit(vm_addr_t p, size_t size, uint prot, heap_error_code_t *error_co
              * files (query SystemPafefileInformation only gets you the current size). */
             /* xref case 345 on fixmes (and link to wiki discussion) */
             if (schedule_reset(RESET_ALL)) {
+
+#ifdef CLIENT_INTERFACE
+                        instrument_low_on_memory();
+#endif
                 STATS_INC(reset_low_commit_count);
                 DO_THRESHOLD_SAFE(
                     DYNAMO_OPTION(report_reset_commit_threshold), FREQ_PROTECTED_SECTION,
