@@ -37,7 +37,7 @@
 #define DRBBDUP_RETURN_SLOT 3
 
 // Comment out macro for no stats
-//#define ENABLE_STATS 1
+#define ENABLE_STATS 1
 
 /*************************************************************************
  * Structs
@@ -160,6 +160,8 @@ static unsigned long prev_fp_gen = 0;
 
 void *stat_mutex = NULL;
 
+#define TIME_FILE "./OUT_FILE"
+file_t time_file;
 #endif
 
 /**************************************************************
@@ -1430,6 +1432,9 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
         fp_cache_pc = init_fp_cache();
 
 #ifdef ENABLE_STATS
+
+        time_file = dr_open_file(TIME_FILE, DR_FILE_WRITE_OVERWRITE);
+
         case_num = dr_global_alloc(
                 sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
         memset(case_num, 0,
@@ -1482,6 +1487,9 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
         dr_mutex_destroy(stat_mutex);
         dr_global_free(case_num,
                 sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
+
+        dr_close_file(time_file);
+
 #endif
     }
     return DRBBDUP_SUCCESS;
@@ -1492,6 +1500,8 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
  */
 
 #ifdef ENABLE_STATS
+
+
 
 /**
  * Clean Calls for tracking. I keep things simple and use clean calls.
@@ -1626,7 +1636,7 @@ void record_sample(void *drcontext, dr_mcontext_t *mcontext) {
 
     prev_fp_gen = gen_num;
 
-    dr_fprintf(STDERR, "(%lu,%lu) (%lu,%lu)\n", sample_count, new_fp_taint_num,
+    dr_fprintf(time_file, "(%lu,%lu) (%lu,%lu)\n", sample_count, new_fp_taint_num,
             sample_count, new_fp_gen);
 
     sample_count++;

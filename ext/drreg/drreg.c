@@ -2084,8 +2084,6 @@ drreg_restore_aflags(void *drcontext, instrlist_t *ilist, instr_t *where,
         if (release) {
             pt->aflags.xchg = DR_REG_NULL;
             res = drreg_unreserve_register(drcontext, ilist, where, DR_REG_XAX);
-
-//            pt->reg[DR_REG_XAX - DR_REG_START_GPR].in_use = false;
         }
     } else {
         if (ops.conservative ||
