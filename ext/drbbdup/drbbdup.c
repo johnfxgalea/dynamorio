@@ -885,22 +885,6 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
 
         /* Check whether it is in bounds */
 
-        if (manager->manager_opts.enable_pop_threshold) {
-
-            instr = INSTR_CREATE_popcnt(drcontext, scratch_reg_opnd,
-                    scratch_reg_opnd);
-            instrlist_meta_preinsert(bb, where, instr);
-
-            opnd = opnd_create_immed_uint(
-                    (uintptr_t) manager->manager_opts.max_pop_threshold,
-                    OPSZ_PTR);
-            instr = INSTR_CREATE_cmp(drcontext, scratch_reg_opnd, opnd);
-            instrlist_meta_preinsert(bb, where, instr);
-
-            instr = INSTR_CREATE_jcc(drcontext, OP_jg, label_opnd);
-            instrlist_meta_preinsert(bb, where, instr);
-        }
-
         if (opts.fp_settings.hit_gen_threshold > 0) {
 
             /* Since cache is thread private, we can use direct access. No collisions! */
@@ -914,6 +898,23 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
             /* If counter has NOT reached threshold, jmp to default */
             label_opnd = opnd_create_instr(labels[0]);
             instr = INSTR_CREATE_jcc(drcontext, OP_jnz, label_opnd);
+            instrlist_meta_preinsert(bb, where, instr);
+        }
+
+
+        if (manager->manager_opts.enable_pop_threshold) {
+
+            instr = INSTR_CREATE_popcnt(drcontext, scratch_reg_opnd,
+                    scratch_reg_opnd);
+            instrlist_meta_preinsert(bb, where, instr);
+
+            opnd = opnd_create_immed_uint(
+                    (uintptr_t) manager->manager_opts.max_pop_threshold,
+                    OPSZ_PTR);
+            instr = INSTR_CREATE_cmp(drcontext, scratch_reg_opnd, opnd);
+            instrlist_meta_preinsert(bb, where, instr);
+
+            instr = INSTR_CREATE_jcc(drcontext, OP_jg, label_opnd);
             instrlist_meta_preinsert(bb, where, instr);
         }
 
