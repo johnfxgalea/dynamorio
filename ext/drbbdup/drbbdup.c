@@ -37,7 +37,7 @@
 #define DRBBDUP_RETURN_SLOT 3
 
 // Comment out macro for no stats
-#define ENABLE_STATS 1
+//#define ENABLE_STATS 1
 
 /*************************************************************************
  * Structs
@@ -885,6 +885,23 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
 
         /* Check whether it is in bounds */
 
+        if (manager->manager_opts.enable_pop_threshold) {
+
+            instr = INSTR_CREATE_popcnt(drcontext, scratch_reg_opnd,
+                    scratch_reg_opnd);
+            instrlist_meta_preinsert(bb, where, instr);
+
+            opnd = opnd_create_immed_uint(
+                    (uintptr_t) manager->manager_opts.max_pop_threshold,
+                    OPSZ_PTR);
+            instr = INSTR_CREATE_cmp(drcontext, scratch_reg_opnd, opnd);
+            instrlist_meta_preinsert(bb, where, instr);
+
+            instr = INSTR_CREATE_jcc(drcontext, OP_jg, label_opnd);
+            instrlist_meta_preinsert(bb, where, instr);
+        }
+
+
         if (opts.fp_settings.hit_gen_threshold > 0) {
 
             /* Since cache is thread private, we can use direct access. No collisions! */
@@ -901,22 +918,6 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
             instrlist_meta_preinsert(bb, where, instr);
         }
 
-
-        if (manager->manager_opts.enable_pop_threshold) {
-
-            instr = INSTR_CREATE_popcnt(drcontext, scratch_reg_opnd,
-                    scratch_reg_opnd);
-            instrlist_meta_preinsert(bb, where, instr);
-
-            opnd = opnd_create_immed_uint(
-                    (uintptr_t) manager->manager_opts.max_pop_threshold,
-                    OPSZ_PTR);
-            instr = INSTR_CREATE_cmp(drcontext, scratch_reg_opnd, opnd);
-            instrlist_meta_preinsert(bb, where, instr);
-
-            instr = INSTR_CREATE_jcc(drcontext, OP_jg, label_opnd);
-            instrlist_meta_preinsert(bb, where, instr);
-        }
 
         /* Insert new case handling here */
         instr = INSTR_CREATE_mov_imm(drcontext, scratch_reg_opnd,
