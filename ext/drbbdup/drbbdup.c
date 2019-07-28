@@ -1203,7 +1203,7 @@ static void drbbdup_handle_new_case() {
     LOG(drcontext, DR_LOG_ALL, 2, "%s Found new taint case! I am about to flush for %p\n",
             __FUNCTION__, bb_pc);
 
-    dr_fprintf(STDERR, "Found new taint case! I am about to flush for %p %u\n", bb_pc, conditional_val);
+//    dr_fprintf(STDERR, "Found new taint case! I am about to flush for %p %u\n", bb_pc, conditional_val);
 
 
     /* Increment now, otherwise our delete fragment event will remove the manager */
@@ -1313,7 +1313,7 @@ static void deleted_frag(void *drcontext, void *tag) {
         if (manager->ref_counter <= 0) {
             bool is_removed = hashtable_remove(&(pt->case_manager_table),
                     bb_pc);
-            dr_fprintf(STDERR, "Removing %p\n", bb_pc);
+//            dr_fprintf(STDERR, "Removing %p\n", bb_pc);
             DR_ASSERT(is_removed);
         }
     }
