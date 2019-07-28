@@ -1186,7 +1186,7 @@ static void drbbdup_handle_new_case() {
                 DR_ASSERT(
                         manager->cases[i].condition_val
                                 == (unsigned int ) (uintptr_t ) conditional_val);
-            )
+            }
 
         }
     }
