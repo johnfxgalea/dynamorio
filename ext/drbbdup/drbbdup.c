@@ -1214,8 +1214,24 @@ static void drbbdup_handle_new_case() {
     bool succ = dr_delete_fragment(drcontext, tag);
     DR_ASSERT(succ);
 
-    mcontext.pc = bb_pc;
-    dr_redirect_execution(&mcontext);
+    if (!manager->is_eflag_dead) {
+          // Eflag restoration is taken from drreg. Should move it upon release.
+          reg_t newval = mcontext.xflags;
+          reg_t val;
+          uint sahf;
+          val = drbbdup_get_spilled(DRBBDUP_FLAG_REG_SLOT);
+          sahf = (val & 0xff00) >> 8;
+          newval &= ~(EFLAGS_ARITH);
+          newval |= sahf;
+          if (TEST(1, val)) /* seto */
+              newval |= EFLAGS_OF;
+          mcontext.xflags = newval;
+      }
+      if (!manager->is_xax_dead)
+          reg_set_value(DR_REG_XAX, &mcontext,
+                  drbbdup_get_spilled(DRBBDUP_XAX_REG_SLOT));
+      mcontext.pc = bb_pc;
+      dr_redirect_execution(&mcontext);
 }
 
 static app_pc init_fp_cache() {
