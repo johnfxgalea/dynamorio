@@ -175,6 +175,15 @@ static opnd_t drbbdup_get_tls_raw_slot_opnd(int slot_idx) {
             OPSZ_PTR, false, true, false);
 }
 
+static reg_t drbbdup_get_spilled(int slot_idx) {
+
+    byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
+            + (slot_idx * (sizeof(void *))));
+
+    void **value = (void **) addr;
+    return (reg_t) *value;
+}
+
 /**
  * Returns the value of the comparator.
  */
