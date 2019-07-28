@@ -1194,6 +1194,9 @@ static void drbbdup_handle_new_case() {
     LOG(drcontext, DR_LOG_ALL, 2, "%s Found new taint case! I am about to flush for %p\n",
             __FUNCTION__, bb_pc);
 
+    dr_fprintf("Found new taint case! I am about to flush for %p\n", bb_pc);
+
+
     /* Increment now, otherwise our delete fragment event will remove the manager */
     DR_ASSERT(!manager->fp_flag);
     manager->ref_counter++;
