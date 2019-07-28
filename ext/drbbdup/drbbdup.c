@@ -1142,7 +1142,7 @@ static void drbbdup_handle_new_case() {
 
     void *drcontext = dr_get_current_drcontext();
 
-    dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_INTEGER, };
+    dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_ALL, };
     dr_get_mcontext(drcontext, &mcontext);
 
     void *tag = (void *) reg_get_value(DR_REG_XAX, &mcontext);
@@ -1214,7 +1214,8 @@ static void drbbdup_handle_new_case() {
     bool succ = dr_delete_fragment(drcontext, tag);
     DR_ASSERT(succ);
 
-    /* Delete fragment allows us to continue */
+    mcontext.pc = bb_pc;
+    dr_redirect_execution(&mcontext);
 }
 
 static app_pc init_fp_cache() {
