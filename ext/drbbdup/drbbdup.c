@@ -37,7 +37,7 @@
 #define DRBBDUP_RETURN_SLOT 3
 
 // Comment out macro for no stats
-#define ENABLE_STATS 1
+//#define ENABLE_STATS 1
 
 /*************************************************************************
  * Structs
