@@ -411,7 +411,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!manager->manager_opts.enable_dynamic_fp)
-    drbbdup_stat_no_fp();
+        drbbdup_stat_no_fp();
 #endif
 
     /**
@@ -901,7 +901,6 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
             instrlist_meta_preinsert(bb, where, instr);
         }
 
-
         if (opts.fp_settings.hit_gen_threshold > 0) {
 
             /* Since cache is thread private, we can use direct access. No collisions! */
@@ -917,7 +916,6 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
             instr = INSTR_CREATE_jcc(drcontext, OP_jnz, label_opnd);
             instrlist_meta_preinsert(bb, where, instr);
         }
-
 
         /* Insert new case handling here */
         instr = INSTR_CREATE_mov_imm(drcontext, scratch_reg_opnd,
@@ -1184,76 +1182,82 @@ static void drbbdup_handle_new_case() {
                         (unsigned int) (uintptr_t) conditional_val;
                 manager->cases[i].skip_post = false;
                 break;
-            }
+            } else {
+                DR_ASSERT(
+                        manager->cases[i].condition_val
+                                == (unsigned int ) (uintptr_t ) conditional_val);
+            )
+
         }
     }
+}
 
-    LOG(drcontext, DR_LOG_ALL, 2, "%s Found new taint case! I am about to flush for %p\n",
-            __FUNCTION__, bb_pc);
+LOG(drcontext, DR_LOG_ALL, 2, "%s Found new taint case! I am about to flush for %p\n",
+        __FUNCTION__, bb_pc);
 
-    /* Increment now, otherwise our delete fragment event will remove the manager */
-    DR_ASSERT(!manager->fp_flag);
-    manager->ref_counter++;
-    manager->fp_flag = true;
+/* Increment now, otherwise our delete fragment event will remove the manager */
+DR_ASSERT(!manager->fp_flag);
+manager->ref_counter++;
+manager->fp_flag = true;
 
-    /**
-     * This is an important step.
-     *
-     * In order to handle the new case, we need to flush out the bb
-     * in DR's cache. We then redirect execution to app code, which will
-     * then lead DR to emit a new bb. This time, the bb will include the handle
-     * for our new case which is tracked by the manager.
-     */
+/**
+ * This is an important step.
+ *
+ * In order to handle the new case, we need to flush out the bb
+ * in DR's cache. We then redirect execution to app code, which will
+ * then lead DR to emit a new bb. This time, the bb will include the handle
+ * for our new case which is tracked by the manager.
+ */
 
-    bool succ = dr_delete_fragment(drcontext, tag);
-    DR_ASSERT(succ);
+bool succ = dr_delete_fragment(drcontext, tag);
+DR_ASSERT(succ);
 
-    /* Delete fragment allows us to continue */
+/* Delete fragment allows us to continue */
 }
 
 static app_pc init_fp_cache() {
 
-    app_pc cache_pc;
-    instrlist_t *ilist;
-    size_t size;
-    instr_t *where;
+app_pc cache_pc;
+instrlist_t *ilist;
+size_t size;
+instr_t *where;
 
-    void *drcontext = dr_get_current_drcontext();
+void *drcontext = dr_get_current_drcontext();
 
-    ilist = instrlist_create(drcontext);
+ilist = instrlist_create(drcontext);
 
-    opnd_t return_data_opnd = drbbdup_get_tls_raw_slot_opnd(
-    DRBBDUP_RETURN_SLOT);
-    where = INSTR_CREATE_jmp_ind(drcontext, return_data_opnd);
-    instrlist_meta_append(ilist, where);
+opnd_t return_data_opnd = drbbdup_get_tls_raw_slot_opnd(
+DRBBDUP_RETURN_SLOT);
+where = INSTR_CREATE_jmp_ind(drcontext, return_data_opnd);
+instrlist_meta_append(ilist, where);
 
-    dr_insert_clean_call(drcontext, ilist, where, drbbdup_handle_new_case,
-    false, 0);
+dr_insert_clean_call(drcontext, ilist, where, drbbdup_handle_new_case,
+false, 0);
 
-    size = dr_page_size();
+size = dr_page_size();
 
-    /*
-     *  Allocate code cache, and set Read-Write-Execute permissions.
-     *  The dr_nonheap_alloc function allows you to set permissions.
-     */
-    cache_pc = (app_pc) dr_nonheap_alloc(size,
-    DR_MEMPROT_READ | DR_MEMPROT_WRITE | DR_MEMPROT_EXEC);
+/*
+ *  Allocate code cache, and set Read-Write-Execute permissions.
+ *  The dr_nonheap_alloc function allows you to set permissions.
+ */
+cache_pc = (app_pc) dr_nonheap_alloc(size,
+DR_MEMPROT_READ | DR_MEMPROT_WRITE | DR_MEMPROT_EXEC);
 
-    byte *end = instrlist_encode(drcontext, ilist, cache_pc, true);
-    instrlist_clear_and_destroy(drcontext, ilist);
+byte *end = instrlist_encode(drcontext, ilist, cache_pc, true);
+instrlist_clear_and_destroy(drcontext, ilist);
 
-    DR_ASSERT(end - cache_pc <= (int ) size);
+DR_ASSERT(end - cache_pc <= (int ) size);
 
-    // Change the permission Read-Write-Execute permissions.
-    // In particular, we do not need to write the the private cache
-    dr_memory_protect(cache_pc, size, DR_MEMPROT_READ | DR_MEMPROT_EXEC);
+// Change the permission Read-Write-Execute permissions.
+// In particular, we do not need to write the the private cache
+dr_memory_protect(cache_pc, size, DR_MEMPROT_READ | DR_MEMPROT_EXEC);
 
-    return cache_pc;
+return cache_pc;
 }
 
 static void destroy_fp_cache(app_pc cache_pc) {
 
-    dr_nonheap_free(cache_pc, dr_page_size());
+dr_nonheap_free(cache_pc, dr_page_size());
 }
 
 /******************************************************************
@@ -1262,28 +1266,27 @@ static void destroy_fp_cache(app_pc cache_pc) {
 
 static void deleted_frag(void *drcontext, void *tag) {
 
-    if (drcontext == NULL)
-        return;
+if (drcontext == NULL)
+    return;
 
-    drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
-            drcontext, tls_idx);
+drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(drcontext,
+        tls_idx);
 
-    app_pc bb_pc = dr_fragment_app_pc(tag);
+app_pc bb_pc = dr_fragment_app_pc(tag);
 
-    drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-            &(pt->case_manager_table), bb_pc);
+drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+        &(pt->case_manager_table), bb_pc);
 
-    if (manager) {
+if (manager) {
 
-        DR_ASSERT(manager->ref_counter > 0);
-        manager->ref_counter--;
+    DR_ASSERT(manager->ref_counter > 0);
+    manager->ref_counter--;
 
-        if (manager->ref_counter <= 0) {
-            bool is_removed = hashtable_remove(&(pt->case_manager_table),
-                    bb_pc);
-            DR_ASSERT(is_removed);
-        }
+    if (manager->ref_counter <= 0) {
+        bool is_removed = hashtable_remove(&(pt->case_manager_table), bb_pc);
+        DR_ASSERT(is_removed);
     }
+}
 }
 
 /************************************************************************
@@ -1291,211 +1294,207 @@ static void deleted_frag(void *drcontext, void *tag) {
  */
 
 DR_EXPORT drbbdup_status_t drbbdup_register_case_value(void *drbbdup_ctx,
-        uint case_val, bool skip_post) {
+    uint case_val, bool skip_post) {
 
-    drbbdup_manager_t *manager = (drbbdup_manager_t *) drbbdup_ctx;
+drbbdup_manager_t *manager = (drbbdup_manager_t *) drbbdup_ctx;
 
-    int i;
-    for (i = 0; i < opts.fp_settings.dup_limit; i++) {
-        drbbdup_case_t *dup_case = &(manager->cases[i]);
-        if (!dup_case->is_defined) {
+int i;
+for (i = 0; i < opts.fp_settings.dup_limit; i++) {
+    drbbdup_case_t *dup_case = &(manager->cases[i]);
+    if (!dup_case->is_defined) {
 
-            dup_case->is_defined = true;
-            dup_case->condition_val = case_val;
-            dup_case->skip_post = skip_post;
-            return DRBBDUP_SUCCESS;
-        }
+        dup_case->is_defined = true;
+        dup_case->condition_val = case_val;
+        dup_case->skip_post = skip_post;
+        return DRBBDUP_SUCCESS;
     }
+}
 
-    return DRBBDUP_ERROR;
+return DRBBDUP_ERROR;
 }
 
 DR_EXPORT drbbdup_status_t drbbdup_unregister_case_value(void *drbbdup_ctx,
-        uint case_val) {
+    uint case_val) {
 
-    drbbdup_manager_t *manager = (drbbdup_manager_t *) drbbdup_ctx;
+drbbdup_manager_t *manager = (drbbdup_manager_t *) drbbdup_ctx;
 
-    int i;
-    for (i = 0; i < opts.fp_settings.dup_limit; i++) {
+int i;
+for (i = 0; i < opts.fp_settings.dup_limit; i++) {
 
-        drbbdup_case_t *dup_case = &(manager->cases[i]);
-        if (dup_case->is_defined && dup_case->condition_val == case_val) {
+    drbbdup_case_t *dup_case = &(manager->cases[i]);
+    if (dup_case->is_defined && dup_case->condition_val == case_val) {
 
-            dup_case->is_defined = false;
-            return DRBBDUP_SUCCESS;
-        }
+        dup_case->is_defined = false;
+        return DRBBDUP_SUCCESS;
     }
+}
 
-    return DRBBDUP_ERROR;
+return DRBBDUP_ERROR;
 }
 
 static void drbbdup_destroy_manager(void *manager_opaque) {
 
-    drbbdup_manager_t *manager = (drbbdup_manager_t *) manager_opaque;
-    dr_global_free(manager->cases,
-            sizeof(drbbdup_case_t) * opts.fp_settings.dup_limit);
-    dr_global_free(manager, sizeof(drbbdup_manager_t));
+drbbdup_manager_t *manager = (drbbdup_manager_t *) manager_opaque;
+dr_global_free(manager->cases,
+        sizeof(drbbdup_case_t) * opts.fp_settings.dup_limit);
+dr_global_free(manager, sizeof(drbbdup_manager_t));
 }
 
 static void drbbdup_thread_init(void *drcontext) {
 
-    drbbdup_per_thread *pt = (drbbdup_per_thread *) dr_thread_alloc(drcontext,
-            sizeof(*pt));
-    pt->case_index = 0;
+drbbdup_per_thread *pt = (drbbdup_per_thread *) dr_thread_alloc(drcontext,
+        sizeof(*pt));
+pt->case_index = 0;
 
-    pt->pre_analysis_data = NULL;
-    pt->instrum_infos = dr_global_alloc(
-            sizeof(void *) * (opts.fp_settings.dup_limit + 1));
-    memset(pt->instrum_infos, 0,
-            sizeof(void *) * (opts.fp_settings.dup_limit + 1));
+pt->pre_analysis_data = NULL;
+pt->instrum_infos = dr_global_alloc(
+        sizeof(void *) * (opts.fp_settings.dup_limit + 1));
+memset(pt->instrum_infos, 0, sizeof(void *) * (opts.fp_settings.dup_limit + 1));
 
-    /**
-     * We initialise the hash table that keeps track of defined cases per
-     * basic block.
-     */
-    hashtable_init_ex(&(pt->case_manager_table), HASH_BIT_TABLE, HASH_INTPTR,
-    false, false, drbbdup_destroy_manager, NULL, NULL);
+/**
+ * We initialise the hash table that keeps track of defined cases per
+ * basic block.
+ */
+hashtable_init_ex(&(pt->case_manager_table), HASH_BIT_TABLE, HASH_INTPTR,
+false, false, drbbdup_destroy_manager, NULL, NULL);
 
-    drmgr_set_tls_field(drcontext, tls_idx, (void *) pt);
+drmgr_set_tls_field(drcontext, tls_idx, (void *) pt);
 }
 
 static void drbbdup_thread_exit(void *drcontext) {
 
-    drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
-            drcontext, tls_idx);
+drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(drcontext,
+        tls_idx);
 
-    dr_global_free(pt->instrum_infos,
-            sizeof(void *) * (opts.fp_settings.dup_limit + 1));
-    hashtable_delete(&(pt->case_manager_table));
-    dr_thread_free(drcontext, pt, sizeof(*pt));
+dr_global_free(pt->instrum_infos,
+        sizeof(void *) * (opts.fp_settings.dup_limit + 1));
+hashtable_delete(&(pt->case_manager_table));
+dr_thread_free(drcontext, pt, sizeof(*pt));
 }
 
 static void drbbdup_set_options(drbbdup_options_t *ops_in,
-        drbbdup_fp_settings_t *fp_settings_in) {
+    drbbdup_fp_settings_t *fp_settings_in) {
 
-    /* Perform checks */
-    DR_ASSERT(ops_in);
-    DR_ASSERT(ops_in->create_manager);
-    DR_ASSERT(ops_in->get_comparator);
-    DR_ASSERT(ops_in->analyse_bb);
-    DR_ASSERT(ops_in->instrument_bb);
-    DR_ASSERT(ops_in->nan_instrument_bb);
+/* Perform checks */
+DR_ASSERT(ops_in);
+DR_ASSERT(ops_in->create_manager);
+DR_ASSERT(ops_in->get_comparator);
+DR_ASSERT(ops_in->analyse_bb);
+DR_ASSERT(ops_in->instrument_bb);
+DR_ASSERT(ops_in->nan_instrument_bb);
 
-    if (fp_settings_in == NULL) {
-        /* Set default values for fp settings */
-        opts.fp_settings.dup_limit = 3;
-        opts.fp_settings.hit_gen_threshold = 100000;
-        opts.fp_settings.required_size = 0;
-    } else {
-        memcpy(&(opts.fp_settings), fp_settings_in,
-                sizeof(drbbdup_fp_settings_t));
-    }
+if (fp_settings_in == NULL) {
+    /* Set default values for fp settings */
+    opts.fp_settings.dup_limit = 3;
+    opts.fp_settings.hit_gen_threshold = 100000;
+    opts.fp_settings.required_size = 0;
+} else {
+    memcpy(&(opts.fp_settings), fp_settings_in, sizeof(drbbdup_fp_settings_t));
+}
 
-    DR_ASSERT(opts.fp_settings.dup_limit > 0);
-    memcpy(&(opts.functions), ops_in, sizeof(drbbdup_options_t));
+DR_ASSERT(opts.fp_settings.dup_limit > 0);
+memcpy(&(opts.functions), ops_in, sizeof(drbbdup_options_t));
 }
 
 /**
  * TODO
  */
 DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
-        drbbdup_fp_settings_t *fp_settings,
-        drmgr_priority_t *bb_instrum_priority) {
+    drbbdup_fp_settings_t *fp_settings, drmgr_priority_t *bb_instrum_priority) {
 
-    if (drbbdup_ref_count == 0) {
+if (drbbdup_ref_count == 0) {
 
-        drbbdup_set_options(ops_in, fp_settings);
+    drbbdup_set_options(ops_in, fp_settings);
 
-        drreg_options_t drreg_ops = { sizeof(drreg_ops), 5, false, NULL, true };
+    drreg_options_t drreg_ops = { sizeof(drreg_ops), 5, false, NULL, true };
 
-        drmgr_priority_t priority = { sizeof(drmgr_priority_t), "DRBBDUP_DUPS",
-        NULL, NULL, -7500 };
+    drmgr_priority_t priority = { sizeof(drmgr_priority_t), "DRBBDUP_DUPS",
+    NULL, NULL, -7500 };
 
-        if (!drmgr_register_bb_app2app_event(drbbdup_duplicate_phase,
-                &priority))
-            DR_ASSERT(false);
+    if (!drmgr_register_bb_app2app_event(drbbdup_duplicate_phase, &priority))
+        DR_ASSERT(false);
 
-        if (!drmgr_register_bb_instrumentation_ex_event(NULL,
-                drbbdup_analyse_phase, drbbdup_link_phase, NULL,
-                bb_instrum_priority) || drreg_init(&drreg_ops) != DRREG_SUCCESS)
-            DR_ASSERT(false);
+    if (!drmgr_register_bb_instrumentation_ex_event(NULL, drbbdup_analyse_phase,
+            drbbdup_link_phase, NULL, bb_instrum_priority)
+            || drreg_init(&drreg_ops) != DRREG_SUCCESS)
+        DR_ASSERT(false);
 
-        if (!drmgr_register_thread_init_event(drbbdup_thread_init)
-                || !drmgr_register_thread_exit_event(drbbdup_thread_exit))
-            return DRBBDUP_ERROR;
+    if (!drmgr_register_thread_init_event(drbbdup_thread_init)
+            || !drmgr_register_thread_exit_event(drbbdup_thread_exit))
+        return DRBBDUP_ERROR;
 
-        dr_register_delete_event(deleted_frag);
+    dr_register_delete_event(deleted_frag);
 
-        tls_idx = drmgr_register_tls_field();
-        if (tls_idx == -1)
-            return DRBBDUP_ERROR;
+    tls_idx = drmgr_register_tls_field();
+    if (tls_idx == -1)
+        return DRBBDUP_ERROR;
 
-        dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 4, 0);
+    dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 4, 0);
 
-        fp_cache_pc = init_fp_cache();
+    fp_cache_pc = init_fp_cache();
 
 #ifdef ENABLE_STATS
 
-        time_file = dr_open_file(TIME_FILE, DR_FILE_WRITE_OVERWRITE);
+    time_file = dr_open_file(TIME_FILE, DR_FILE_WRITE_OVERWRITE);
 
-        case_num = dr_global_alloc(
-                sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
-        memset(case_num, 0,
-                sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
+    case_num = dr_global_alloc(
+            sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
+    memset(case_num, 0,
+            sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
 
-        stat_mutex = dr_mutex_create();
+    stat_mutex = dr_mutex_create();
 
-        dr_create_client_thread(sample_thread, NULL);
+    dr_create_client_thread(sample_thread, NULL);
 #endif
 
-    }
+}
 
-    drbbdup_ref_count++;
-    return DRBBDUP_SUCCESS;
+drbbdup_ref_count++;
+return DRBBDUP_SUCCESS;
 }
 
 DR_EXPORT drbbdup_status_t drbbdup_init(drbbdup_options_t *ops_in,
-        drmgr_priority_t *bb_instrum_priority) {
+    drmgr_priority_t *bb_instrum_priority) {
 
-    return drbbdup_init_ex(ops_in, NULL, bb_instrum_priority);
+return drbbdup_init_ex(ops_in, NULL, bb_instrum_priority);
 }
 
 DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 
-    DR_ASSERT(drbbdup_ref_count > 0);
-    drbbdup_ref_count--;
+DR_ASSERT(drbbdup_ref_count > 0);
+drbbdup_ref_count--;
 
-    if (drbbdup_ref_count == 0) {
+if (drbbdup_ref_count == 0) {
 
-        DR_ASSERT(fp_cache_pc);
-        destroy_fp_cache(fp_cache_pc);
+    DR_ASSERT(fp_cache_pc);
+    destroy_fp_cache(fp_cache_pc);
 
-        drmgr_unregister_bb_app2app_event(drbbdup_duplicate_phase);
+    drmgr_unregister_bb_app2app_event(drbbdup_duplicate_phase);
 
-        drmgr_unregister_bb_instrumentation_ex_event(NULL,
-                drbbdup_analyse_phase, drbbdup_link_phase, NULL);
+    drmgr_unregister_bb_instrumentation_ex_event(NULL, drbbdup_analyse_phase,
+            drbbdup_link_phase, NULL);
 
-        if (!drmgr_unregister_thread_init_event(drbbdup_thread_init)
-                || !drmgr_unregister_thread_exit_event(drbbdup_thread_exit))
-            return DRBBDUP_ERROR;
+    if (!drmgr_unregister_thread_init_event(drbbdup_thread_init)
+            || !drmgr_unregister_thread_exit_event(drbbdup_thread_exit))
+        return DRBBDUP_ERROR;
 
-        dr_raw_tls_cfree(tls_raw_base, 4);
-        drmgr_unregister_tls_field(tls_idx);
-        dr_unregister_delete_event(deleted_frag);
-        drreg_exit();
+    dr_raw_tls_cfree(tls_raw_base, 4);
+    drmgr_unregister_tls_field(tls_idx);
+    dr_unregister_delete_event(deleted_frag);
+    drreg_exit();
 
 #ifdef ENABLE_STATS
-        drbbdup_stat_print_stats();
+    drbbdup_stat_print_stats();
 
-        dr_mutex_destroy(stat_mutex);
-        dr_global_free(case_num,
-                sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
+    dr_mutex_destroy(stat_mutex);
+    dr_global_free(case_num,
+            sizeof(unsigned long) * (opts.fp_settings.dup_limit + 1));
 
-        dr_close_file(time_file);
+    dr_close_file(time_file);
 
 #endif
-    }
-    return DRBBDUP_SUCCESS;
+}
+return DRBBDUP_SUCCESS;
 }
 
 /***********************************************************************************
@@ -1503,8 +1502,6 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
  */
 
 #ifdef ENABLE_STATS
-
-
 
 /**
  * Clean Calls for tracking. I keep things simple and use clean calls.
@@ -1514,109 +1511,108 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 
 static void drbbdup_stat_inc_bb() {
 
-    dr_mutex_lock(stat_mutex);
-    total_bb++;
-    dr_mutex_unlock(stat_mutex);
+dr_mutex_lock(stat_mutex);
+total_bb++;
+dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_inc_instrum_bb() {
 
-    dr_mutex_lock(stat_mutex);
-    bb_instrumented++;
-    dr_mutex_unlock(stat_mutex);
+dr_mutex_lock(stat_mutex);
+bb_instrumented++;
+dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_inc_non_applicable() {
 
-    dr_mutex_lock(stat_mutex);
-    non_applicable++;
-    dr_mutex_unlock(stat_mutex);
+dr_mutex_lock(stat_mutex);
+non_applicable++;
+dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_no_fp() {
 
-    dr_mutex_lock(stat_mutex);
-    no_fp++;
-    dr_mutex_unlock(stat_mutex);
+dr_mutex_lock(stat_mutex);
+no_fp++;
+dr_mutex_unlock(stat_mutex);
 
 }
 
 static void drbbdup_stat_inc_gen() {
 
-    dr_mutex_lock(stat_mutex);
-    gen_num++;
-    dr_mutex_unlock(stat_mutex);
+dr_mutex_lock(stat_mutex);
+gen_num++;
+dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_inc_bb_size(uint size) {
 
-    dr_mutex_lock(stat_mutex);
-    total_size += size;
-    dr_mutex_unlock(stat_mutex);
+dr_mutex_lock(stat_mutex);
+total_size += size;
+dr_mutex_unlock(stat_mutex);
 }
 
 static void clean_call_case_entry(int i) {
-    DR_ASSERT(i >= 0 && i < opts.fp_settings.dup_limit + 1);
+DR_ASSERT(i >= 0 && i < opts.fp_settings.dup_limit + 1);
 
-    dr_mutex_lock(stat_mutex);
-    case_num[i]++;
-    dr_mutex_unlock(stat_mutex);
+dr_mutex_lock(stat_mutex);
+case_num[i]++;
+dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
-        instr_t *where, int case_index) {
+    instr_t *where, int case_index) {
 
-    dr_insert_clean_call(drcontext, bb, where, clean_call_case_entry, false, 1,
-            OPND_CREATE_INTPTR(case_index));
+dr_insert_clean_call(drcontext, bb, where, clean_call_case_entry, false, 1,
+OPND_CREATE_INTPTR(case_index));
 }
 
 static void clean_call_bail_entry() {
 
-    dr_mutex_lock(stat_mutex);
-    total_bails++;
-    dr_mutex_unlock(stat_mutex);
+dr_mutex_lock(stat_mutex);
+total_bails++;
+dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_clean_bail_entry(void *drcontext, instrlist_t *bb,
-        instr_t *where) {
+    instr_t *where) {
 
-    dr_insert_clean_call(drcontext, bb, where, clean_call_bail_entry, false, 0);
+dr_insert_clean_call(drcontext, bb, where, clean_call_bail_entry, false, 0);
 }
 
 static void clean_call_bb_execc() {
 
-    dr_mutex_lock(stat_mutex);
-    total_exec++;
-    dr_mutex_unlock(stat_mutex);
+dr_mutex_lock(stat_mutex);
+total_exec++;
+dr_mutex_unlock(stat_mutex);
 }
 
 static void drbbdup_stat_clean_bb_exec(void *drcontext, instrlist_t *bb,
-        instr_t *where) {
+    instr_t *where) {
 
-    dr_insert_clean_call(drcontext, bb, where, clean_call_bb_execc, false, 0);
+dr_insert_clean_call(drcontext, bb, where, clean_call_bb_execc, false, 0);
 }
 
 static void drbbdup_stat_print_stats() {
 
-    dr_fprintf(STDERR, "---------------------------\n");
+dr_fprintf(STDERR, "---------------------------\n");
 
-    dr_fprintf(STDERR, "Total BB: %lu\n", total_bb);
-    dr_fprintf(STDERR, "Total Skipped: %lu\n", non_applicable);
-    dr_fprintf(STDERR, "Total BB with no Dynamic FP: %lu\n", no_fp);
-    dr_fprintf(STDERR, "Number of BB instrumented: %lu\n", bb_instrumented);
+dr_fprintf(STDERR, "Total BB: %lu\n", total_bb);
+dr_fprintf(STDERR, "Total Skipped: %lu\n", non_applicable);
+dr_fprintf(STDERR, "Total BB with no Dynamic FP: %lu\n", no_fp);
+dr_fprintf(STDERR, "Number of BB instrumented: %lu\n", bb_instrumented);
 
-    if (bb_instrumented != 0)
-    dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
-            total_size / bb_instrumented);
+if (bb_instrumented != 0)
+    dr_fprintf(STDERR, "Avg BB size: %lu\n\n", total_size / bb_instrumented);
 
-    dr_fprintf(STDERR, "Number of fast paths generated (bb): %lu\n", gen_num);
-    dr_fprintf(STDERR, "Total bb exec: %lu\n", total_exec);
-    dr_fprintf(STDERR, "Total bails: %lu\n", total_bails);
+dr_fprintf(STDERR, "Number of fast paths generated (bb): %lu\n", gen_num);
+dr_fprintf(STDERR, "Total bb exec: %lu\n", total_exec);
+dr_fprintf(STDERR, "Total bails: %lu\n", total_bails);
 
-    for (int i = 0; i < opts.fp_settings.dup_limit + 1; i++)
+for (int i = 0; i < opts.fp_settings.dup_limit + 1; i++)
     dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
 
-    dr_fprintf(STDERR, "---------------------------\n");
+dr_fprintf(STDERR, "---------------------------\n");
 
 }
 
@@ -1624,35 +1620,35 @@ unsigned long sample_count = 0;
 
 void record_sample(void *drcontext, dr_mcontext_t *mcontext) {
 
-    dr_mutex_lock(stat_mutex);
+dr_mutex_lock(stat_mutex);
 
-    unsigned long new_fp_taint_num = 0;
-    for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
+unsigned long new_fp_taint_num = 0;
+for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
     new_fp_taint_num += case_num[i];
 
-    new_fp_taint_num = new_fp_taint_num - prev_full_taint_num;
-    unsigned long new_fp_gen = gen_num - prev_fp_gen;
+new_fp_taint_num = new_fp_taint_num - prev_full_taint_num;
+unsigned long new_fp_gen = gen_num - prev_fp_gen;
 
-    prev_full_taint_num = 0;
-    for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
+prev_full_taint_num = 0;
+for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
     prev_full_taint_num += case_num[i];
 
-    prev_fp_gen = gen_num;
+prev_fp_gen = gen_num;
 
-    dr_fprintf(time_file, "(%lu,%lu) (%lu,%lu)\n", sample_count, new_fp_taint_num,
-            sample_count, new_fp_gen);
+dr_fprintf(time_file, "(%lu,%lu) (%lu,%lu)\n", sample_count, new_fp_taint_num,
+        sample_count, new_fp_gen);
 
-    sample_count++;
-    dr_mutex_unlock(stat_mutex);
+sample_count++;
+dr_mutex_unlock(stat_mutex);
 }
 
 static void sample_thread(void *arg) {
 
-    dr_set_itimer(ITIMER_REAL, 1000, record_sample);
+dr_set_itimer(ITIMER_REAL, 1000, record_sample);
 
-    while (1) {
-        dr_thread_yield();
-    }
+while (1) {
+    dr_thread_yield();
+}
 }
 
 #endif
