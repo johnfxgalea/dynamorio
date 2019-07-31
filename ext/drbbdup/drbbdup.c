@@ -1203,7 +1203,7 @@ static void drbbdup_handle_new_case() {
     LOG(drcontext, DR_LOG_ALL, 2, "%s Found new taint case! I am about to flush for %p\n",
             __FUNCTION__, bb_pc);
 
-  dr_fprintf(STDERR, "Found new taint case! I am about to flush for %p %u\n", bb_pc, conditional_val);
+//  dr_fprintf(STDERR, "Found new taint case! I am about to flush for %p %u\n", bb_pc, conditional_val);
 
 
     /* Increment now, otherwise our delete fragment event will remove the manager */
