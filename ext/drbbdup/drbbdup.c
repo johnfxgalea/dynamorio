@@ -401,14 +401,14 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         manager->default_case.is_defined = true;
         manager->default_case.condition_val = default_case_val;
         manager->default_case.skip_post = default_skip_post;
-        manager->ref_counter = 1;
+//        manager->ref_counter = 1;
         hashtable_add(&(pt->case_manager_table), pc, manager);
 
     } else {
 
-        if (!manager->fp_flag) {
-            manager->ref_counter++;
-        }
+//        if (!manager->fp_flag) {
+//            manager->ref_counter++;
+//        }
     }
 
     manager->fp_flag = false;
@@ -1203,12 +1203,12 @@ static void drbbdup_handle_new_case() {
     LOG(drcontext, DR_LOG_ALL, 2, "%s Found new taint case! I am about to flush for %p\n",
             __FUNCTION__, bb_pc);
 
-//    dr_fprintf(STDERR, "Found new taint case! I am about to flush for %p %u\n", bb_pc, conditional_val);
+  dr_fprintf(STDERR, "Found new taint case! I am about to flush for %p %u\n", bb_pc, conditional_val);
 
 
     /* Increment now, otherwise our delete fragment event will remove the manager */
     DR_ASSERT(!manager->fp_flag);
-    manager->ref_counter++;
+//    manager->ref_counter++;
     manager->fp_flag = true;
 
     /**
@@ -1288,36 +1288,40 @@ static void destroy_fp_cache(app_pc cache_pc) {
     dr_nonheap_free(cache_pc, dr_page_size());
 }
 
-/******************************************************************
- * Frag Deletion
- */
-
-static void deleted_frag(void *drcontext, void *tag) {
-
-    if (drcontext == NULL)
-        return;
-
-    drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
-            drcontext, tls_idx);
-
-    app_pc bb_pc = dr_fragment_app_pc(tag);
-
-    drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-            &(pt->case_manager_table), bb_pc);
-
-    if (manager) {
-
-        DR_ASSERT(manager->ref_counter > 0);
-        manager->ref_counter--;
-
-        if (manager->ref_counter <= 0) {
-            bool is_removed = hashtable_remove(&(pt->case_manager_table),
-                    bb_pc);
-//            dr_fprintf(STDERR, "Removing %p\n", bb_pc);
-            DR_ASSERT(is_removed);
-        }
-    }
-}
+///******************************************************************
+// * Frag Deletion
+// */
+//
+//static void deleted_frag(void *drcontext, void *tag) {
+//
+//    if (drcontext == NULL)
+//        return;
+//
+//    drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
+//            drcontext, tls_idx);
+//
+//    app_pc bb_pc = dr_fragment_app_pc(tag);
+//
+//    drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+//            &(pt->case_manager_table), bb_pc);
+//
+//    if (manager) {
+//
+//        dr_fprintf(STDERR, "Found in removal %p\n", bb_pc);
+//
+////
+////        DR_ASSERT(manager->ref_counter > 0);
+////        manager->ref_counter--;
+////
+////        if (manager->ref_counter <= 0) {
+////            dr_fprintf(STDERR, "Removing %p %d\n", bb_pc, manager->fp_flag);
+////
+////            bool is_removed = hashtable_remove(&(pt->case_manager_table),
+////                    bb_pc);
+////            DR_ASSERT(is_removed);
+////        }
+//    }
+//}
 
 /************************************************************************
  * INIT
@@ -1457,7 +1461,7 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
                 || !drmgr_register_thread_exit_event(drbbdup_thread_exit))
             return DRBBDUP_ERROR;
 
-        dr_register_delete_event(deleted_frag);
+//        dr_register_delete_event(deleted_frag);
 
         tls_idx = drmgr_register_tls_field();
         if (tls_idx == -1)
@@ -1514,7 +1518,7 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 
         dr_raw_tls_cfree(tls_raw_base, 4);
         drmgr_unregister_tls_field(tls_idx);
-        dr_unregister_delete_event(deleted_frag);
+//        dr_unregister_delete_event(deleted_frag);
         drreg_exit();
 
 #ifdef ENABLE_STATS
