@@ -28,7 +28,7 @@
 #    define LOG(dc, mask, level, ...) /* nothing */
 #endif
 
-#define HASH_BIT_TABLE 8
+#define HASH_BIT_TABLE 13
 
 /* THREAD SLOTS */
 #define DRBBDUP_COMPARATOR_SLOT 0
@@ -55,14 +55,12 @@ typedef struct {
 } drbbdup_case_t;
 
 typedef struct {
-    int fp_flag;
     int ref_counter;
     drbbdup_case_t default_case;
     drbbdup_case_t *cases;
     bool is_eflag_dead;
     bool is_xax_dead;
     drbbdup_manager_options_t manager_opts;
-    uint hit_count;
 } drbbdup_manager_t;
 
 /**
@@ -78,12 +76,9 @@ typedef enum {
 } drbbdup_label_t;
 
 typedef struct {
-    hashtable_t case_manager_table;
-
     int case_index;
     void *pre_analysis_data;
     void **instrum_infos;
-
 } drbbdup_per_thread;
 
 /*************************************************************************
@@ -101,6 +96,8 @@ uint drbbdup_ref_count = 0;
 static reg_id_t tls_raw_reg;
 static uint tls_raw_base;
 static int tls_idx = -1;
+
+static hashtable_t case_manager_table;
 
 static drbbdup_options_priv_t opts;
 
@@ -242,13 +239,19 @@ static uint drbbdup_count_dups(drbbdup_manager_t *manager) {
         if (manager->cases[i].is_defined)
             count++;
     }
+
+    if (manager->default_case.is_defined)
+        count++;
+
     return count;
 }
 
+/**
+ *  Clone from original instr list, but place duplication in bb.
+ */
 static void drbbdup_add_dup(void *drcontext, instrlist_t *bb,
         instrlist_t *original) {
 
-    /* Clone from original instr list, but place duplication in bb. */
     instrlist_t *dup = instrlist_clone(drcontext, original);
     instr_t *start = instrlist_first(dup);
     DR_ASSERT(start);
@@ -263,17 +266,11 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     /* Use the PC of the fragment as the key */
     app_pc pc = dr_fragment_app_pc(tag);
 
-    drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
-            drcontext, tls_idx);
-
     if (translating)
         return DR_EMIT_DEFAULT;
 
-    /* Fetch new case manager */
-    drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-            &(pt->case_manager_table), pc);
-
 #ifdef ENABLE_STATS
+    if (!for_trace)
     drbbdup_stat_inc_bb();
 #endif
 
@@ -283,11 +280,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
      */
     instr_t *first = instrlist_first(bb);
     if (instr_is_syscall(first) || instr_is_cti(first) || instr_is_ubr(first)) {
-
-        if (manager != NULL)
-            dr_fprintf(STDERR, "FAILED PC is %p\n", pc);
-
-        DR_ASSERT(manager == NULL);
 #ifdef ENABLE_STATS
         drbbdup_stat_inc_non_applicable();
 #endif
@@ -300,24 +292,21 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
      * The intuition here is that small bbs might as well have propagation attempted
      * instead of generating fast paths.
      */
-    size_t cur_size = 0;
+    size_t bb_size = 0;
     for (first = instrlist_first_app(bb); first != NULL; first =
             instr_get_next_app(first))
-        cur_size++;
+        bb_size++;
 
-    if (cur_size < opts.fp_settings.required_size) {
-
+    if (bb_size < opts.fp_settings.required_size) {
 #ifdef ENABLE_STATS
         drbbdup_stat_inc_non_applicable();
 #endif
-
-        DR_ASSERT(manager == NULL);
         /** Too small. **/
         return DR_EMIT_DEFAULT;
     }
 
 #ifdef ENABLE_STATS
-    drbbdup_stat_inc_bb_size(cur_size);
+    drbbdup_stat_inc_bb_size(bb_size);
 #endif
 
     /* Example:
@@ -345,12 +334,11 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
      * We will leave the linking for the instrumentation stage.
      *
      * We can add jmp instructions here and DR will set them to meta for us.
-     * DR Developers needed to do this for unrolling rep.
+     * We needed to do this for unrolling rep.
      */
 
     /* We create a duplication here to keep track of original bb */
     instrlist_t *original = instrlist_clone(drcontext, bb);
-
     instr_t *last = instrlist_last_app(original);
 
     /**
@@ -362,6 +350,12 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         instr_destroy(drcontext, last);
     }
 
+    /* Fetch new case manager */
+
+
+    hashtable_lock(&case_manager_table);
+    drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+            &case_manager_table, pc);
     if (manager == NULL) {
         /* If manager is not available, we need to create a default one */
         manager = dr_global_alloc(sizeof(drbbdup_manager_t));
@@ -375,13 +369,13 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         manager->manager_opts.enable_dynamic_fp = true;
         manager->manager_opts.enable_pop_threshold = false;
         manager->manager_opts.max_pop_threshold = 0;
-        manager->hit_count = opts.fp_settings.hit_gen_threshold;
-        uint default_case_val = 0;
-        bool default_skip_post = 0;
+        manager->default_case.condition_val = 0;
+        manager->default_case.skip_post = false;
 
         bool consider = opts.functions.create_manager(manager, drcontext, tag,
-                original, &(manager->manager_opts), &default_case_val,
-                &default_skip_post, opts.functions.user_data);
+                original, &(manager->manager_opts),
+                &(manager->default_case.condition_val),
+                &(manager->default_case.skip_post), opts.functions.user_data);
 
         if (!consider) {
             /** The users doesn't want fast path for this bb. **/
@@ -389,29 +383,21 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
             drbbdup_stat_inc_non_applicable();
 #endif
 
-            instrlist_clear_and_destroy(drcontext, original);
+            hashtable_unlock(&case_manager_table);
 
+            instrlist_clear_and_destroy(drcontext, original);
             /** Destroy the manager. **/
             dr_global_free(manager->cases,
                     sizeof(drbbdup_case_t) * opts.fp_settings.dup_limit);
             dr_global_free(manager, sizeof(drbbdup_manager_t));
+
             return DR_EMIT_DEFAULT;
         }
 
         manager->default_case.is_defined = true;
-        manager->default_case.condition_val = default_case_val;
-        manager->default_case.skip_post = default_skip_post;
-//        manager->ref_counter = 1;
-        hashtable_add(&(pt->case_manager_table), pc, manager);
-
-    } else {
-
-//        if (!manager->fp_flag) {
-//            manager->ref_counter++;
-//        }
+        hashtable_add(&case_manager_table, pc, manager);
     }
 
-    manager->fp_flag = false;
     DR_ASSERT(manager != NULL);
 
 #ifdef ENABLE_STATS
@@ -420,7 +406,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
     if (!manager->manager_opts.enable_dynamic_fp)
-        drbbdup_stat_no_fp();
+    drbbdup_stat_no_fp();
 #endif
 
     /**
@@ -445,7 +431,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     instrlist_meta_preinsert(bb, instrlist_first(bb), label);
 
     /* Let's perform the duplication */
-    int total_dups = (int) drbbdup_count_dups(manager) + 1;
+    int total_dups = (int) drbbdup_count_dups(manager);
     DR_ASSERT(total_dups >= 1);
 
     /* Now add dups for the cases.*/
@@ -488,6 +474,8 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         skip_post = manager->cases[total_dups - 2].skip_post;
     }
 
+    hashtable_unlock(&case_manager_table);
+
     /**
      * Add the exit label for the last instance of the bb.
      * If there is a syscall, place the exit label prior.
@@ -527,7 +515,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 /************************************************************************
  * ANALYSIS PHASE
- *
  */
 static bool drbbdup_is_at_end_ex(void *drcontext, instr_t *check_instr,
         drbbdup_label_t *label_info) {
@@ -693,8 +680,7 @@ static dr_emit_flags_t drbbdup_analyse_phase(void *drcontext, void *tag,
 
     /* Fetch hashtable */
     drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-            &(pt->case_manager_table), pc);
-
+            &case_manager_table, pc);
     if (manager == NULL)
         return DR_EMIT_DEFAULT;
 
@@ -910,22 +896,6 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
             instrlist_meta_preinsert(bb, where, instr);
         }
 
-        if (opts.fp_settings.hit_gen_threshold > 0) {
-
-            /* Since cache is thread private, we can use direct access. No collisions! */
-            opnd_t hit_table_opnd = opnd_create_abs_addr(
-                    (void *) &(manager->hit_count), OPSZ_4);
-            /* Decrement hit counter */
-            opnd = opnd_create_immed_int(1, OPSZ_4);
-            instr = INSTR_CREATE_sub(drcontext, hit_table_opnd, opnd);
-            instrlist_meta_preinsert(bb, where, instr);
-
-            /* If counter has NOT reached threshold, jmp to default */
-            label_opnd = opnd_create_instr(labels[0]);
-            instr = INSTR_CREATE_jcc(drcontext, OP_jnz, label_opnd);
-            instrlist_meta_preinsert(bb, where, instr);
-        }
-
         /* Insert new case handling here */
         instr = INSTR_CREATE_mov_imm(drcontext, scratch_reg_opnd,
                 opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
@@ -960,7 +930,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
     app_pc pc = dr_fragment_app_pc(tag);
 
     drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-            &(pt->case_manager_table), pc);
+            &case_manager_table, pc);
 
     if (manager == NULL) {
         /** No fast path code wanted! Instrument normally and return! **/
@@ -1157,24 +1127,15 @@ static void drbbdup_handle_new_case() {
     void *tag = (void *) reg_get_value(DR_REG_XAX, &mcontext);
     app_pc bb_pc = dr_fragment_app_pc(tag);
 
-    drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
-            drcontext, tls_idx);
-
     /* Get the missing case */
     reg_t conditional_val = (reg_t) drbbdup_get_comparator();
 
     /* Look up case manager */
     drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-            &(pt->case_manager_table), bb_pc);
+            &case_manager_table, bb_pc);
 
     if (!manager)
         DR_ASSERT_MSG(false, "Can't find manager!\n");
-
-    /* Refresh hit counter*/
-    if (opts.fp_settings.hit_gen_threshold > 0) {
-        DR_ASSERT(manager->hit_count == 0);
-        manager->hit_count = opts.fp_settings.hit_gen_threshold;
-    }
 
     /* Find an undefined case, and set it up for the new conditional. */
 
@@ -1205,12 +1166,6 @@ static void drbbdup_handle_new_case() {
 
 //  dr_fprintf(STDERR, "Found new taint case! I am about to flush for %p %u\n", bb_pc, conditional_val);
 
-
-    /* Increment now, otherwise our delete fragment event will remove the manager */
-    DR_ASSERT(!manager->fp_flag);
-//    manager->ref_counter++;
-    manager->fp_flag = true;
-
     /**
      * This is an important step.
      *
@@ -1220,27 +1175,27 @@ static void drbbdup_handle_new_case() {
      * for our new case which is tracked by the manager.
      */
 
-    bool succ = dr_delete_fragment(drcontext, tag);
+    bool succ = dr_flush_region(bb_pc, 1);
     DR_ASSERT(succ);
 
     if (!manager->is_eflag_dead) {
-          // Eflag restoration is taken from drreg. Should move it upon release.
-          reg_t newval = mcontext.xflags;
-          reg_t val;
-          uint sahf;
-          val = drbbdup_get_spilled(DRBBDUP_FLAG_REG_SLOT);
-          sahf = (val & 0xff00) >> 8;
-          newval &= ~(EFLAGS_ARITH);
-          newval |= sahf;
-          if (TEST(1, val)) /* seto */
-              newval |= EFLAGS_OF;
-          mcontext.xflags = newval;
-      }
-      if (!manager->is_xax_dead)
-          reg_set_value(DR_REG_XAX, &mcontext,
-                  drbbdup_get_spilled(DRBBDUP_XAX_REG_SLOT));
-      mcontext.pc = bb_pc;
-      dr_redirect_execution(&mcontext);
+        // Eflag restoration is taken from drreg. Should move it upon release.
+        reg_t newval = mcontext.xflags;
+        reg_t val;
+        uint sahf;
+        val = drbbdup_get_spilled(DRBBDUP_FLAG_REG_SLOT);
+        sahf = (val & 0xff00) >> 8;
+        newval &= ~(EFLAGS_ARITH);
+        newval |= sahf;
+        if (TEST(1, val)) /* seto */
+            newval |= EFLAGS_OF;
+        mcontext.xflags = newval;
+    }
+    if (!manager->is_xax_dead)
+        reg_set_value(DR_REG_XAX, &mcontext,
+                drbbdup_get_spilled(DRBBDUP_XAX_REG_SLOT));
+    mcontext.pc = bb_pc;
+    dr_redirect_execution(&mcontext);
 }
 
 static app_pc init_fp_cache() {
@@ -1386,13 +1341,6 @@ static void drbbdup_thread_init(void *drcontext) {
     memset(pt->instrum_infos, 0,
             sizeof(void *) * (opts.fp_settings.dup_limit + 1));
 
-    /**
-     * We initialise the hash table that keeps track of defined cases per
-     * basic block.
-     */
-    hashtable_init_ex(&(pt->case_manager_table), HASH_BIT_TABLE, HASH_INTPTR,
-    false, false, drbbdup_destroy_manager, NULL, NULL);
-
     drmgr_set_tls_field(drcontext, tls_idx, (void *) pt);
 }
 
@@ -1403,7 +1351,6 @@ static void drbbdup_thread_exit(void *drcontext) {
 
     dr_global_free(pt->instrum_infos,
             sizeof(void *) * (opts.fp_settings.dup_limit + 1));
-    hashtable_delete(&(pt->case_manager_table));
     dr_thread_free(drcontext, pt, sizeof(*pt));
 }
 
@@ -1421,7 +1368,6 @@ static void drbbdup_set_options(drbbdup_options_t *ops_in,
     if (fp_settings_in == NULL) {
         /* Set default values for fp settings */
         opts.fp_settings.dup_limit = 3;
-        opts.fp_settings.hit_gen_threshold = 100000;
         opts.fp_settings.required_size = 0;
     } else {
         memcpy(&(opts.fp_settings), fp_settings_in,
@@ -1470,6 +1416,13 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
         dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 4, 0);
 
         fp_cache_pc = init_fp_cache();
+
+        /**
+         * We initialise the hash table that keeps track of defined cases per
+         * basic block.
+         */
+        hashtable_init_ex(&case_manager_table, HASH_BIT_TABLE, HASH_INTPTR,
+        false, false, drbbdup_destroy_manager, NULL, NULL);
 
 #ifdef ENABLE_STATS
 
@@ -1520,6 +1473,9 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
         drmgr_unregister_tls_field(tls_idx);
 //        dr_unregister_delete_event(deleted_frag);
         drreg_exit();
+
+        hashtable_delete(&case_manager_table);
+
 
 #ifdef ENABLE_STATS
         drbbdup_stat_print_stats();
@@ -1602,7 +1558,7 @@ static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
         instr_t *where, int case_index) {
 
     dr_insert_clean_call(drcontext, bb, where, clean_call_case_entry, false, 1,
-    OPND_CREATE_INTPTR(case_index));
+            OPND_CREATE_INTPTR(case_index));
 }
 
 static void clean_call_bail_entry() {
@@ -1641,15 +1597,15 @@ static void drbbdup_stat_print_stats() {
     dr_fprintf(STDERR, "Number of BB instrumented: %lu\n", bb_instrumented);
 
     if (bb_instrumented != 0)
-        dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
-                total_size / bb_instrumented);
+    dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
+            total_size / bb_instrumented);
 
     dr_fprintf(STDERR, "Number of fast paths generated (bb): %lu\n", gen_num);
     dr_fprintf(STDERR, "Total bb exec: %lu\n", total_exec);
     dr_fprintf(STDERR, "Total bails: %lu\n", total_bails);
 
     for (int i = 0; i < opts.fp_settings.dup_limit + 1; i++)
-        dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
+    dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
 
     dr_fprintf(STDERR, "---------------------------\n");
 
@@ -1663,14 +1619,14 @@ void record_sample(void *drcontext, dr_mcontext_t *mcontext) {
 
     unsigned long new_fp_taint_num = 0;
     for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
-        new_fp_taint_num += case_num[i];
+    new_fp_taint_num += case_num[i];
 
     new_fp_taint_num = new_fp_taint_num - prev_full_taint_num;
     unsigned long new_fp_gen = gen_num - prev_fp_gen;
 
     prev_full_taint_num = 0;
     for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
-        prev_full_taint_num += case_num[i];
+    prev_full_taint_num += case_num[i];
 
     prev_fp_gen = gen_num;
 
