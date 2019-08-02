@@ -185,6 +185,17 @@ drbbdup_get_comparator() {
     return *comparator_addr;
 }
 
+
+static reg_t drbbdup_get_spilled(int slot_idx) {
+
+    byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
+            + (slot_idx * (sizeof(void *))));
+
+    void **value = (void **) addr;
+    return (reg_t) *value;
+}
+
+
 DR_EXPORT void drbbdup_set_comparator(void *comparator_val) {
 
     byte *addr = dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base;
@@ -1175,8 +1186,28 @@ static void drbbdup_handle_new_case() {
      * for our new case which is tracked by the manager.
      */
 
-    bool succ = dr_unlink_flush_region(bb_pc, 1);
+    bool succ = dr_flush_region(bb_pc, 1);
     DR_ASSERT(succ);
+
+    if (!manager->is_eflag_dead) {
+        // Eflag restoration is taken from drreg. Should move it upon release.
+        reg_t newval = mcontext.xflags;
+        reg_t val;
+        uint sahf;
+        val = drbbdup_get_spilled(DRBBDUP_FLAG_REG_SLOT);
+        sahf = (val & 0xff00) >> 8;
+        newval &= ~(EFLAGS_ARITH);
+        newval |= sahf;
+        if (TEST(1, val)) /* seto */
+            newval |= EFLAGS_OF;
+        mcontext.xflags = newval;
+    }
+    if (!manager->is_xax_dead)
+        reg_set_value(DR_REG_XAX, &mcontext,
+                drbbdup_get_spilled(DRBBDUP_XAX_REG_SLOT));
+    mcontext.pc = bb_pc;
+    dr_redirect_execution(&mcontext);
+
 }
 
 static app_pc init_fp_cache() {
