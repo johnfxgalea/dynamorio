@@ -292,6 +292,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 #ifdef ENABLE_STATS
         drbbdup_stat_inc_non_applicable();
 #endif
+        dr_rwlock_write_unlock(rw_lock);
         return DR_EMIT_DEFAULT;
     }
 
@@ -312,6 +313,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 #ifdef ENABLE_STATS
         drbbdup_stat_inc_non_applicable();
 #endif
+        dr_rwlock_write_unlock(rw_lock);
         /** Too small. **/
         return DR_EMIT_DEFAULT;
     }
