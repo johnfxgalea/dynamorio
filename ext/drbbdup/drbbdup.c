@@ -289,7 +289,11 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     if (instr_is_syscall(first) || instr_is_cti(first) || instr_is_ubr(first)) {
 
         DR_ASSERT(manager == NULL);
-#ifdef ENABLE_STATS
+
+        if (manager != NULL)
+            hashtable_remove(&case_manager_table, pc);
+
+        #ifdef ENABLE_STATS
         drbbdup_stat_inc_non_applicable();
 #endif
         dr_rwlock_write_unlock(rw_lock);
