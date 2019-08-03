@@ -609,7 +609,7 @@ static void drbbdup_handle_pre_analysis(void *drcontext, instrlist_t *bb,
     if (!opts.functions.pre_analyse_bb)
         return;
 
-    if (instr_get_note(strt) == (void *) DRBBDUP_LABEL_NORMAL) {
+    if (instr_get_note(strt) != (void *) DRBBDUP_LABEL_NORMAL) {
         instr_t * test_instr = strt;
         while (test_instr) {
 
