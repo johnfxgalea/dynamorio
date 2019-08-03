@@ -276,12 +276,19 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     drbbdup_stat_inc_bb();
 #endif
 
+    /* Fetch new case manager */
+    dr_rwlock_write_lock(rw_lock);
+    drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+            &case_manager_table, pc);
+
     /* If the first instruction is a branch statement, we simply return.
      * We do not duplicate cti instructions because we need to abide by bb rules -
      * only one exit.
      */
     instr_t *first = instrlist_first(bb);
     if (instr_is_syscall(first) || instr_is_cti(first) || instr_is_ubr(first)) {
+
+        DR_ASSERT(manager == NULL);
 #ifdef ENABLE_STATS
         drbbdup_stat_inc_non_applicable();
 #endif
@@ -300,6 +307,8 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         bb_size++;
 
     if (bb_size < opts.fp_settings.required_size) {
+        DR_ASSERT(manager == NULL);
+
 #ifdef ENABLE_STATS
         drbbdup_stat_inc_non_applicable();
 #endif
@@ -352,11 +361,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         instr_destroy(drcontext, last);
     }
 
-    /* Fetch new case manager */
-
-    dr_rwlock_write_lock(rw_lock);
-    drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-            &case_manager_table, pc);
     if (manager == NULL) {
         /* If manager is not available, we need to create a default one */
         manager = dr_global_alloc(sizeof(drbbdup_manager_t));
@@ -689,10 +693,10 @@ static dr_emit_flags_t drbbdup_analyse_phase(void *drcontext, void *tag,
     app_pc pc = dr_fragment_app_pc(tag);
 
     /* Fetch hashtable */
-
     dr_rwlock_read_lock(rw_lock);
     drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
             &case_manager_table, pc);
+
     if (manager == NULL) {
         dr_rwlock_read_unlock(rw_lock);
         return DR_EMIT_DEFAULT;
