@@ -185,7 +185,6 @@ drbbdup_get_comparator() {
     return *comparator_addr;
 }
 
-
 static reg_t drbbdup_get_spilled(int slot_idx) {
 
     byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
@@ -194,7 +193,6 @@ static reg_t drbbdup_get_spilled(int slot_idx) {
     void **value = (void **) addr;
     return (reg_t) *value;
 }
-
 
 DR_EXPORT void drbbdup_set_comparator(void *comparator_val) {
 
@@ -610,6 +608,16 @@ static void drbbdup_handle_pre_analysis(void *drcontext, instrlist_t *bb,
      */
     if (!opts.functions.pre_analyse_bb)
         return;
+
+    if (instr_get_note(strt) == (void *) DRBBDUP_LABEL_NORMAL) {
+        instr_t * test_instr = strt;
+        while (test_instr) {
+
+            instr_disassemble(drcontext, test_instr, STDERR);
+            dr_fprintf(STDERR, "\n");
+            test_instr = instr_get_next(test_instr);
+        }
+    }
 
     DR_ASSERT(instr_get_note(strt) == (void * ) DRBBDUP_LABEL_NORMAL);
     strt = instr_get_next(strt);
