@@ -288,8 +288,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
     instr_t *first = instrlist_first(bb);
     if (instr_is_syscall(first) || instr_is_cti(first) || instr_is_ubr(first)) {
 
-        DR_ASSERT(manager == NULL);
-
         if (manager != NULL)
             hashtable_remove(&case_manager_table, pc);
 
