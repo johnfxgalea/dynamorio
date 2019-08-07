@@ -1202,7 +1202,7 @@ static void drbbdup_handle_new_case() {
      * for our new case which is tracked by the manager.
      */
 
-    bool succ = dr_flush_region(bb_pc, 1);
+    bool succ = dr_unlink_flush_region(bb_pc, 1);
     DR_ASSERT(succ);
 
     if (!manager->is_eflag_dead) {
