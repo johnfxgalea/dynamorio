@@ -6747,6 +6747,132 @@ dr_redirect_native_target(void *drcontext)
  * *loging not safe if not owning thread?
  */
 
+
+DR_API
+/* Schedules a shared fragment to be deleted.
+ *
+ * User must redirect control upon return.
+ *
+ * No locks should be held.
+ */
+bool
+dr_delete_shared_fragment(void *tag)
+{
+    dcontext_t *dcontext = get_thread_private_dcontext();
+    fragment_t *f;
+    bool deletable = false, waslinking;
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
+    CLIENT_ASSERT(SHARED_FRAGMENTS_ENABLED(),
+                  "dr_delete_shared_fragment() only valid without -thread_private");
+
+    thread_record_t **flush_threads;
+    int flush_num_threads;
+
+    const thread_synch_state_t desired_state =
+        THREAD_SYNCH_SUSPENDED_VALID_MCONTEXT_OR_NO_XFER;
+    synch_with_all_threads(desired_state, &flush_threads, &flush_num_threads,
+                           THREAD_SYNCH_NO_LOCKS_NO_XFER,
+                           THREAD_SYNCH_SUSPEND_FAILURE_IGNORE);
+
+    waslinking = is_couldbelinking(dcontext);
+    if (!waslinking)
+        enter_couldbelinking(dcontext, NULL, false);
+
+    f = fragment_lookup(dcontext, tag);
+    if (f != NULL && (f->flags & FRAG_CANNOT_DELETE) == 0) {
+        deletable = true;
+
+        ASSERT(TEST(FRAG_SHARED, f->flags));
+        if (TEST(FRAG_IS_TRACE, f->flags)) {
+            d_r_mutex_lock(&trace_building_lock);
+        }
+        /* grab bb building lock even for traces to further prevent link changes */
+        d_r_mutex_lock(&bb_building_lock);
+
+        if (TEST(FRAG_WAS_DELETED, f->flags)) {
+            /* since caller can't grab locks, we can have a race where someone
+             * else deletes first -- in that case nothing to do
+             */
+            STATS_INC(shared_delete_noflush_race);
+            d_r_mutex_unlock(&bb_building_lock);
+            if (TEST(FRAG_IS_TRACE, f->flags))
+                d_r_mutex_unlock(&trace_building_lock);
+            return deletable;
+        }
+
+        acquire_recursive_lock(&change_linking_lock);
+        acquire_vm_areas_lock(dcontext, f->flags);
+
+        if (TEST(FRAG_LINKED_OUTGOING, f->flags))
+            unlink_fragment_outgoing(GLOBAL_DCONTEXT, f);
+        if (TEST(FRAG_LINKED_INCOMING, f->flags))
+            unlink_fragment_incoming(GLOBAL_DCONTEXT, f);
+        incoming_remove_fragment(GLOBAL_DCONTEXT, f);
+
+        if (SHARED_IB_TARGETS()){
+
+            if (SHARED_IBT_TABLES_ENABLED()) {
+                /* Remove from shared ibl tables.
+                 * dcontext need not be GLOBAL_DCONTEXT.
+                 */
+                fragment_prepare_for_removal(GLOBAL_DCONTEXT, f);
+            } else {
+                /* We can't tell afterward which entries to remove from the private
+                 * ibl tables, as we no longer keep fragment_t* pointers (we used to
+                 * look for FRAG_WAS_DELETED) and we can't do a range remove (tags
+                 * don't map regularly to regions).  So we must invalidate each
+                 * fragment as we process it.  It's ok to walk the thread list
+                 * here since we're post-synch for all threads.
+                 */
+                dr_fprintf(STDERR, "-----------\n");
+
+                int i;
+                for (i = 0; i < flush_num_threads; i++) {
+
+                    if (flush_threads[i]->dcontext == get_thread_private_dcontext())
+                        dr_fprintf(STDERR, "HELLO!!!\n");
+                    fragment_prepare_for_removal(flush_threads[i]->dcontext, f);
+                }
+            }
+        }
+
+        fragment_prepare_for_removal(GLOBAL_DCONTEXT, f);
+//        /* fragment_remove ignores the ibl tables for shared fragments */
+        fragment_remove(GLOBAL_DCONTEXT, f);
+
+        vm_area_remove_fragment(dcontext, f);
+        /* case 8419: make marking as deleted atomic w/ fragment_t.also_vmarea field
+         * invalidation, so that users of vm_area_add_to_list() can rely on this
+         * flag to determine validity
+         */
+        f->flags |= FRAG_WAS_DELETED;
+
+        release_vm_areas_lock(dcontext, f->flags);
+        release_recursive_lock(&change_linking_lock);
+
+        if (!TEST(FRAG_HAS_TRANSLATION_INFO, f->flags))
+            fragment_record_translation_info(dcontext, f, NULL);
+
+        /* try to catch any potential races */
+        ASSERT(!TEST(FRAG_LINKED_OUTGOING, f->flags));
+        ASSERT(!TEST(FRAG_LINKED_INCOMING, f->flags));
+
+        d_r_mutex_unlock(&bb_building_lock);
+        if (TEST(FRAG_IS_TRACE, f->flags)) {
+            d_r_mutex_unlock(&trace_building_lock);
+        }
+
+        end_synch_with_all_threads(flush_threads, flush_num_threads, true);
+        add_to_lazy_deletion_list(dcontext, f);
+    }
+    else
+        end_synch_with_all_threads(flush_threads, flush_num_threads, true);
+
+    if (!waslinking)
+        enter_nolinking(dcontext, NULL, false);
+    return deletable;
+}
+
 DR_API
 /* Schedules the fragment to be deleted.  Once this call is completed,
  * an existing executing fragment is allowed to complete, but control

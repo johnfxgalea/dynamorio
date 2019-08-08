@@ -1202,8 +1202,9 @@ static void drbbdup_handle_new_case() {
      * for our new case which is tracked by the manager.
      */
 
-    bool succ = dr_unlink_flush_region(bb_pc, 1);
+    bool succ = dr_delete_shared_fragment(tag);
     DR_ASSERT(succ);
+
 
     if (!manager->is_eflag_dead) {
         // Eflag restoration is taken from drreg. Should move it upon release.

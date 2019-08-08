@@ -5985,6 +5985,16 @@ bool
 dr_replace_fragment(void *drcontext, void *tag, instrlist_t *ilist);
 
 DR_API
+/* Schedules a shared fragment to be deleted.
+ *
+ * User must redirect control upon return.
+ *
+ * No locks should be held.
+ */
+bool
+dr_delete_shared_fragment(void *tag);
+
+DR_API
 /**
  * Deletes the fragment with tag \p tag.  This routine is only valid
  * with the -thread_private option; it deletes the fragment in the
