@@ -6824,8 +6824,6 @@ dr_delete_shared_fragment(void *tag)
                  * fragment as we process it.  It's ok to walk the thread list
                  * here since we're post-synch for all threads.
                  */
-                dr_fprintf(STDERR, "-----------\n");
-
                 int i;
                 for (i = 0; i < flush_num_threads; i++) {
 
