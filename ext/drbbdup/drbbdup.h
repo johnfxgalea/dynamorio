@@ -135,6 +135,7 @@ typedef struct {
 
     uint required_size;
     int dup_limit;
+    ushort hit_threshold;
 } drbbdup_fp_settings_t;
 
 /**

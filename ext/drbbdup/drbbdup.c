@@ -29,12 +29,14 @@
 #endif
 
 #define HASH_BIT_TABLE 13
+#define HIT_COUNT_TABLE_SIZE 65536
 
 /* THREAD SLOTS */
 #define DRBBDUP_COMPARATOR_SLOT 0
 #define DRBBDUP_XAX_REG_SLOT 1
 #define DRBBDUP_FLAG_REG_SLOT 2
 #define DRBBDUP_RETURN_SLOT 3
+#define DRBBDUP_HIT_TABLE_SLOT 4
 
 // Comment out macro for no stats
 //#define ENABLE_STATS 1
@@ -79,6 +81,7 @@ typedef struct {
     int case_index;
     void *pre_analysis_data;
     void **instrum_infos;
+    uint16_t hit_counts[HIT_COUNT_TABLE_SIZE];
 } drbbdup_per_thread;
 
 /*************************************************************************
@@ -291,7 +294,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
         if (manager != NULL)
             hashtable_remove(&case_manager_table, pc);
 
-        #ifdef ENABLE_STATS
+#ifdef ENABLE_STATS
         drbbdup_stat_inc_non_applicable();
 #endif
         dr_rwlock_write_unlock(rw_lock);
@@ -777,6 +780,14 @@ static void drbbdup_set_case_labels(void *drcontext, instrlist_t *bb,
     }
 }
 
+static uint drbbdup_get_hitcount_hash(intptr_t bb_id) {
+
+    uint hash = ((uint) bb_id) << 1;
+    hash &= (HIT_COUNT_TABLE_SIZE - 1); //
+    DR_ASSERT(hash < HIT_COUNT_TABLE_SIZE);
+    return hash;
+}
+
 static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
         app_pc translation, void *tag, instrlist_t *bb, instr_t *where,
         drbbdup_manager_t *manager) {
@@ -917,6 +928,29 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
             instrlist_meta_preinsert(bb, where, instr);
 
             instr = INSTR_CREATE_jcc(drcontext, OP_jg, label_opnd);
+            instrlist_meta_preinsert(bb, where, instr);
+        }
+
+        if (opts.fp_settings.hit_threshold > 0) {
+
+            opnd_t hit_table_opnd;
+            hit_table_opnd = drbbdup_get_tls_raw_slot_opnd(
+            DRBBDUP_HIT_TABLE_SLOT);
+
+            /* Load the hit counter table */
+            instr = INSTR_CREATE_mov_ld(drcontext, scratch_reg_opnd,
+                    hit_table_opnd);
+            instrlist_meta_preinsert(bb, where, instr);
+
+            uint hash = drbbdup_get_hitcount_hash((intptr_t) translation);
+            opnd_t hit_count_opnd = OPND_CREATE_MEM16(DR_REG_XAX,
+                    hash * sizeof(ushort));
+            opnd = opnd_create_immed_uint(1, OPSZ_2);
+            instr = INSTR_CREATE_sub(drcontext, hit_count_opnd, opnd);
+            instrlist_meta_preinsert(bb, where, instr);
+
+            /* If counter has NOT reached threshold, jmp to default */
+            instr = INSTR_CREATE_jcc(drcontext, OP_jnz, label_opnd);
             instrlist_meta_preinsert(bb, where, instr);
         }
 
@@ -1188,6 +1222,17 @@ static void drbbdup_handle_new_case() {
 
     dr_rwlock_write_unlock(rw_lock);
 
+    /* Refresh hit counter*/
+    drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
+            drcontext, tls_idx);
+
+     if (opts.fp_settings.hit_threshold > 0) {
+         uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
+         DR_ASSERT(pt->hit_counts[hash] == 0);
+         pt->hit_counts[hash] = opts.fp_settings.hit_threshold;
+     }
+
+
     LOG(drcontext, DR_LOG_ALL, 2, "%s Found new taint case! I am about to flush for %p\n",
             __FUNCTION__, bb_pc);
 
@@ -1204,7 +1249,6 @@ static void drbbdup_handle_new_case() {
 
     bool succ = dr_delete_shared_fragment(tag);
     DR_ASSERT(succ);
-
 
     if (!manager->is_eflag_dead) {
         // Eflag restoration is taken from drreg. Should move it upon release.
@@ -1370,6 +1414,15 @@ static void drbbdup_thread_init(void *drcontext) {
     memset(pt->instrum_infos, 0,
             sizeof(void *) * (opts.fp_settings.dup_limit + 1));
 
+    for (int i = 0; i < HIT_COUNT_TABLE_SIZE; i++) {
+        pt->hit_counts[i] = opts.fp_settings.hit_threshold;
+    }
+
+    byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
+            + (DRBBDUP_HIT_TABLE_SLOT * (sizeof(void *))));
+    void **addr_hitcount = (void **) addr;
+    *addr_hitcount = pt->hit_counts;
+
     drmgr_set_tls_field(drcontext, tls_idx, (void *) pt);
 }
 
@@ -1398,6 +1451,7 @@ static void drbbdup_set_options(drbbdup_options_t *ops_in,
         /* Set default values for fp settings */
         opts.fp_settings.dup_limit = 3;
         opts.fp_settings.required_size = 0;
+        opts.fp_settings.hit_threshold = 3500;
     } else {
         memcpy(&(opts.fp_settings), fp_settings_in,
                 sizeof(drbbdup_fp_settings_t));
@@ -1443,7 +1497,7 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
         if (tls_idx == -1)
             return DRBBDUP_ERROR;
 
-        dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 4, 0);
+        dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 5, 0);
 
         fp_cache_pc = init_fp_cache();
 
@@ -1501,7 +1555,7 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
                 || !drmgr_unregister_thread_exit_event(drbbdup_thread_exit))
             return DRBBDUP_ERROR;
 
-        dr_raw_tls_cfree(tls_raw_base, 4);
+        dr_raw_tls_cfree(tls_raw_base, 5);
         drmgr_unregister_tls_field(tls_idx);
 //        dr_unregister_delete_event(deleted_frag);
         drreg_exit();
