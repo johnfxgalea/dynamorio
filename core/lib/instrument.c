@@ -6797,8 +6797,8 @@ dr_delete_shared_fragment(void *tag)
             d_r_mutex_unlock(&bb_building_lock);
             if (TEST(FRAG_IS_TRACE, f->flags))
                 d_r_mutex_unlock(&trace_building_lock);
-            return deletable;
-        }
+
+        }else{
 
         acquire_recursive_lock(&change_linking_lock);
         acquire_vm_areas_lock(dcontext, f->flags);
@@ -6859,6 +6859,7 @@ dr_delete_shared_fragment(void *tag)
 
         end_synch_with_all_threads(flush_threads, flush_num_threads, true);
         add_to_lazy_deletion_list(dcontext, f);
+        }
     }
     else
         end_synch_with_all_threads(flush_threads, flush_num_threads, true);
