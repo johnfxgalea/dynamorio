@@ -1185,6 +1185,7 @@ static void drbbdup_handle_new_case() {
 
     void *drcontext = dr_get_current_drcontext();
 
+    /* Must use DR_MC_ALL due to dr_redirect_execution */
     dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_ALL, };
     dr_get_mcontext(drcontext, &mcontext);
 
