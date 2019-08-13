@@ -88,10 +88,13 @@ static dr_emit_flags_t drhit_insert_hit(void *drcontext, void *tag,
         instrlist_t *bb, instr_t *where, bool for_trace, bool translating,
         void *user_data) {
 
-    instr_t *instr = instrlist_first_app(bb);
+    if (!drmgr_is_first_instr(drcontext, where))
+        return DR_EMIT_DEFAULT;
+
+    instr_t *instr;
 
     dr_rwlock_read_lock(rw_lock);
-    app_pc bb_pc = instr_get_app_pc(instr);
+    app_pc bb_pc = instr_get_app_pc(where);
     bool consider = hashtable_lookup(&bb_table, (void *) bb_pc) != NULL;
     dr_rwlock_read_unlock(rw_lock);
 
@@ -111,12 +114,12 @@ static dr_emit_flags_t drhit_insert_hit(void *drcontext, void *tag,
     DR_ASSERT(scratch_reg == DR_REG_XDX);
     opnd_t scratch_reg_opnd = opnd_create_reg(scratch_reg);
 
+
     instr_t *done_label = INSTR_CREATE_label(drcontext);
     opnd_t done_opnd = opnd_create_instr(done_label);
 
     /* Load hit table */
-    opnd_t hit_table_opnd = drhit_get_tls_raw_slot_opnd(
-    DRHIT_HIT_SLOT);
+    opnd_t hit_table_opnd = drhit_get_tls_raw_slot_opnd(DRHIT_HIT_SLOT);
     instr = INSTR_CREATE_mov_ld(drcontext, scratch_reg_opnd, hit_table_opnd);
     instrlist_meta_preinsert(bb, where, instr);
 
@@ -128,25 +131,37 @@ static dr_emit_flags_t drhit_insert_hit(void *drcontext, void *tag,
             opnd_create_immed_uint(1, OPSZ_2));
     instrlist_meta_preinsert(bb, where, instr);
 
+    /* FIX: jumping in common path. */
+    DR_ASSERT(hit_cache_pc != NULL);
+    instr = INSTR_CREATE_jcc(drcontext, OP_jnz, done_opnd);
+    instrlist_meta_preinsert(bb, where, instr);
+
+    instr_t *jmp_back_label = INSTR_CREATE_label(drcontext);
+    opnd_t jmp_back_label_opnd = opnd_create_instr(jmp_back_label);
+
+    instrlist_meta_preinsert(bb, where, jmp_back_label);
+    instrlist_meta_preinsert(bb, where, done_label);
+
     /* Store ret to slot */
     opnd_t ret_opnd = drhit_get_tls_raw_slot_opnd(DRHIT_RET_SLOT);
-    instr = INSTR_CREATE_mov_imm(drcontext, ret_opnd, done_opnd);
-    instrlist_meta_preinsert(bb, where, instr);
+    instr = INSTR_CREATE_mov_imm(drcontext, ret_opnd, jmp_back_label_opnd);
+    instrlist_meta_preinsert(bb, jmp_back_label, instr);
 
     /* Store tag */
     opnd_t tag_opnd = drhit_get_tls_raw_slot_opnd(DRHIT_TAG_SLOT);
     opnd_t tag_immed_opnd = opnd_create_immed_int((intptr_t) tag, OPSZ_PTR);
     instr = INSTR_CREATE_mov_imm(drcontext, tag_opnd, tag_immed_opnd);
-    instrlist_meta_preinsert(bb, where, instr);
+    instrlist_meta_preinsert(bb, jmp_back_label, instr);
 
-    drreg_restore_all_now(drcontext, bb, where);
+    drreg_statelessly_restore_app_value(drcontext, bb, DR_REG_NULL, jmp_back_label, done_label, NULL, NULL);
+    drreg_statelessly_restore_app_value(drcontext, bb, DR_REG_XAX, jmp_back_label, done_label, NULL, NULL);
+    drreg_statelessly_restore_app_value(drcontext, bb, DR_REG_XDX, jmp_back_label, done_label, NULL, NULL);
 
     /* Jmp to cache */
     DR_ASSERT(hit_cache_pc != NULL);
-    instr = INSTR_CREATE_jcc(drcontext, OP_jz, opnd_create_pc(hit_cache_pc));
-    instrlist_meta_preinsert(bb, where, instr);
+    instr = INSTR_CREATE_jmp(drcontext, opnd_create_pc(hit_cache_pc));
+    instrlist_meta_preinsert(bb, jmp_back_label, instr);
 
-    instrlist_meta_preinsert(bb, where, done_label);
 
     drreg_unreserve_aflags(drcontext, bb, where);
     drreg_unreserve_register(drcontext, bb, where, scratch_reg);
@@ -227,23 +242,22 @@ static void drhit_destroy_fp_cache(app_pc cache_pc) {
 
 static void deleted_frag(void *drcontext, void *tag) {
 
-    if (drcontext == NULL)
-        return;
-
-    instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
-    instr_t *instr = instrlist_first_app(ilist);
-    app_pc bb_pc = instr_get_app_pc(instr);
-    instrlist_clear_and_destroy(drcontext, ilist);
-
-    dr_rwlock_write_lock(rw_lock);
-
-    bool consider = hashtable_lookup(&bb_table, bb_pc) != NULL;
-
-    if (consider) {
-        hashtable_remove(&bb_table, bb_pc);
-    }
-    dr_rwlock_write_unlock(rw_lock);
-
+//    if (drcontext == NULL)
+//        return;
+//
+//    instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
+//    instr_t *instr = instrlist_first_app(ilist);
+//    app_pc bb_pc = instr_get_app_pc(instr);
+//    instrlist_clear_and_destroy(drcontext, ilist);
+//
+//    dr_rwlock_write_lock(rw_lock);
+//
+//    bool consider = hashtable_lookup(&bb_table, bb_pc) != NULL;
+//
+//    if (consider) {
+//        hashtable_remove(&bb_table, bb_pc);
+//    }
+//    dr_rwlock_write_unlock(rw_lock);
 }
 
 /************************************************************************
@@ -289,6 +303,9 @@ static void drhit_thread_exit(void *drcontext) {
  */
 DR_EXPORT drhit_status_t drhit_init(drhit_options_t *ops_in) {
 
+
+    drmgr_init();
+
     if (ops_in == NULL || ops_in->hit_threshold == 0||
     ops_in->insert_trigger == NULL)
         return DRHIT_ERROR;
@@ -323,6 +340,7 @@ DR_EXPORT drhit_status_t drhit_init(drhit_options_t *ops_in) {
 
         hit_cache_pc = drhit_init_cache(ops_in->insert_trigger,
                 ops_in->user_data);
+
         /**
          * We initialise the hash table that keeps track of defined cases per
          * basic block.
@@ -364,5 +382,8 @@ DR_EXPORT drhit_status_t drhit_exit(void) {
 
         dr_rwlock_destroy(rw_lock);
     }
+
+    drmgr_exit();
+
     return DRHIT_SUCCESS;
 }

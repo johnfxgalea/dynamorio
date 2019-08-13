@@ -289,7 +289,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
      * only one exit.
      */
     instr_t *first = instrlist_first(bb);
-    if (instr_is_syscall(first) || instr_is_cti(first) || instr_is_ubr(first)) {
+    if (instr_is_syscall(first) || instr_is_cti(first) || instr_is_ubr(first) || instr_is_interrupt(first)) {
 
         if (manager != NULL)
             hashtable_remove(&case_manager_table, pc);
@@ -363,7 +363,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
      * If the last instruction is a sytem call/cti, we remove it from the original.
      * This is done so we do not duplicate these instructions.
      */
-    if (instr_is_syscall(last) || instr_is_cti(last) || instr_is_ubr(last)) {
+    if (instr_is_syscall(last) || instr_is_cti(last) || instr_is_ubr(last) || instr_is_interrupt(last)) {
         instrlist_remove(original, last);
         instr_destroy(drcontext, last);
     }
@@ -491,7 +491,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
      * If there is a syscall, place the exit label prior.
      */
     last = instrlist_last(bb);
-    if (instr_is_syscall(last) || instr_is_cti(last) || instr_is_ubr(last)) {
+    if (instr_is_syscall(last) || instr_is_cti(last) || instr_is_ubr(last)  || instr_is_interrupt(last)) {
 
         if (skip_post) {
             /** Add the jmp to exit **/
