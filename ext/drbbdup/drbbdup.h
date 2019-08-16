@@ -45,6 +45,12 @@ typedef enum {
  * TODO
  */
 typedef struct {
+
+	bool is_reverted;
+	bool enable_revert_check;
+    ushort stop_revert_threshold;
+    ushort perform_revert_threshold;
+
     bool enable_dynamic_fp;
     bool enable_pop_threshold;
     size_t max_pop_threshold;
@@ -132,11 +138,17 @@ typedef struct {
 
 /** Specifies the options when initialising drbbdup. */
 typedef struct {
-
     uint required_size;
     int dup_limit;
     ushort hit_threshold;
+    bool enable_revert;
+    ushort revert_threshold; /*division by 2 - Max : stop , Zero : revert */
 } drbbdup_fp_settings_t;
+
+/**
+ * TODO
+ */
+DR_EXPORT bool drbbdup_is_reverted(app_pc pc);
 
 /**
  * TODO

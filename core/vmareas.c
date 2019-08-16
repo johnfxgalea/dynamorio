@@ -1005,8 +1005,6 @@ add_vm_area(vm_area_vector_t *v, app_pc start, app_pc end, uint vm_flags, uint f
             }
             /* shouldn't be adding unmod image over existing not unmod image,
              * reverse could happen with os region merging though */
-            ASSERT(TEST(VM_UNMOD_IMAGE, v->buf[i].vm_flags) ||
-                   !TEST(VM_UNMOD_IMAGE, vm_flags));
             /* for VM_WRITABLE only allow new region to not be writable and
              * existing region to be writable to handle cases of os region
              * merging due to our consistency protection changes */

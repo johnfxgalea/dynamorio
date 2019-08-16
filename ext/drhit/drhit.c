@@ -30,7 +30,7 @@
 #endif
 
 #define HASH_BIT_TABLE 13
-#define HIT_COUNT_TABLE_SIZE 65536
+#define TABLE_SIZE 65536
 
 /* THREAD SLOTS */
 #define DRHIT_HIT_SLOT 0
@@ -79,8 +79,8 @@ static reg_t drhit_get_spilled(int slot_idx) {
 static uint drhit_get_hitcount_hash(intptr_t bb_id) {
 
     uint hash = ((uint) bb_id) << 1;
-    hash &= (HIT_COUNT_TABLE_SIZE - 1);
-    DR_ASSERT(hash < HIT_COUNT_TABLE_SIZE);
+    hash &= (TABLE_SIZE - 1);
+    DR_ASSERT(hash < TABLE_SIZE);
     return hash;
 }
 
@@ -278,9 +278,9 @@ DR_EXPORT void drhit_include_hit_check(void *drcontext, app_pc bb_pc, bool consi
 static void drhit_thread_init(void *drcontext) {
 
     uint16_t *hit_counts = dr_global_alloc(
-    HIT_COUNT_TABLE_SIZE * sizeof(uint16_t));
+    TABLE_SIZE * sizeof(uint16_t));
 
-    for (int i = 0; i < HIT_COUNT_TABLE_SIZE; i++) {
+    for (int i = 0; i < TABLE_SIZE; i++) {
         hit_counts[i] = ops_priv.hit_threshold;
     }
 
@@ -295,7 +295,7 @@ static void drhit_thread_init(void *drcontext) {
 static void drhit_thread_exit(void *drcontext) {
 
     uint16_t *hit_counts = (uint16_t *) drmgr_get_tls_field(drcontext, tls_idx);
-    dr_global_free(hit_counts, HIT_COUNT_TABLE_SIZE * sizeof(uint16_t));
+    dr_global_free(hit_counts, TABLE_SIZE * sizeof(uint16_t));
 }
 
 /**
