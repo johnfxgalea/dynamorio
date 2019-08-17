@@ -48,9 +48,6 @@ typedef struct {
 
 	bool is_reverted;
 	bool enable_revert_check;
-    ushort stop_revert_threshold;
-    ushort perform_revert_threshold;
-
     bool enable_dynamic_fp;
     bool enable_pop_threshold;
     size_t max_pop_threshold;

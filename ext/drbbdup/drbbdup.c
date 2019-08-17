@@ -130,6 +130,8 @@ static void drbbdup_stat_inc_instrum_bb();
 static void drbbdup_stat_inc_non_applicable();
 static void drbbdup_stat_no_fp();
 static void drbbdup_stat_inc_gen();
+static void drbbdup_stat_inc_revert();
+static void drbbdup_stat_inc_stop_revert();
 static void drbbdup_stat_inc_bb_size(uint size);
 static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
 		instr_t *where, int case_index);
@@ -153,8 +155,13 @@ static unsigned long non_applicable = 0;
 static unsigned long no_fp = 0;
 /** Total number of BB executed with faths paths **/
 static unsigned long total_exec = 0;
-/** Number of fast paths generated (faults triggered) **/
+/** Number of fast paths generated **/
 static unsigned long gen_num = 0;
+/** Number of Reverts **/
+static unsigned long revert_num = 0;
+/** Number of stop-reverts **/
+static unsigned long stop_revert_num = 0;
+
 /** Number of bails to slow path**/
 static unsigned long total_bails = 0;
 
@@ -181,9 +188,7 @@ static opnd_t drbbdup_get_tls_raw_slot_opnd(int slot_idx) {
 			OPSZ_PTR, false, true, false);
 }
 
-
-DR_EXPORT bool
-drbbdup_is_reverted(app_pc pc) {
+DR_EXPORT bool drbbdup_is_reverted(app_pc pc) {
 
 	bool is_reverted = false;
 
@@ -191,7 +196,6 @@ drbbdup_is_reverted(app_pc pc) {
 	dr_rwlock_read_lock(rw_lock);
 	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
 			&case_manager_table, pc);
-
 	if (manager)
 		is_reverted = manager->manager_opts.is_reverted;
 	dr_rwlock_read_unlock(rw_lock);
@@ -413,8 +417,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 		manager->default_case.condition_val = 0;
 		manager->default_case.skip_post = false;
 
-		manager->manager_opts.perform_revert_threshold =
-				opts.fp_settings.revert_threshold;
 		manager->manager_opts.enable_revert_check =
 				opts.fp_settings.enable_revert;
 		manager->manager_opts.is_reverted = false;
@@ -898,17 +900,20 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
 		instr = INSTR_CREATE_add(drcontext, revert_count_opnd, opnd);
 		instrlist_meta_preinsert(bb, where, instr);
 
-		/* If counter is reached threshold, jmp to revert.
-		 * We have been taking the slow path for far too long!
-		 */
+		instr = INSTR_CREATE_cmp(drcontext, revert_count_opnd,
+				opnd_create_immed_uint(
+						(ptr_uint_t ) (opts.fp_settings.revert_threshold * 2),
+						OPSZ_2));
+		instrlist_meta_preinsert(bb, where, instr);
+
 		instr = INSTR_CREATE_mov_imm(drcontext, scratch_reg_opnd,
 				opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
 		instrlist_meta_preinsert(bb, where, instr);
 
-		instr = INSTR_CREATE_jcc(drcontext, OP_jo, opnd_create_pc(fp_stop_revert_cache_pc));
+		instr = INSTR_CREATE_jcc(drcontext, OP_jge,
+				opnd_create_pc(fp_stop_revert_cache_pc));
 		instrlist_meta_preinsert(bb, where, instr);
 	}
-
 
 	/**
 	 * Load the comparator value to register.
@@ -1009,7 +1014,8 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
 				instrlist_meta_preinsert(bb, where, instr);
 
 				/* If counter has NOT reached threshold, jmp to default */
-				instr = INSTR_CREATE_jcc(drcontext, OP_jnz, opnd_create_instr(labels[0]));
+				instr = INSTR_CREATE_jcc(drcontext, OP_jnz,
+						opnd_create_instr(labels[0]));
 				instrlist_meta_preinsert(bb, where, instr);
 			}
 
@@ -1041,7 +1047,6 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
 		opnd_t revert_table_opnd = drbbdup_get_tls_raw_slot_opnd(
 		DRBBDUP_REVERT_TABLE_SLOT);
 
-
 		instr = INSTR_CREATE_mov_ld(drcontext, scratch_reg_opnd,
 				revert_table_opnd);
 		instrlist_meta_preinsert(bb, where, instr);
@@ -1060,7 +1065,8 @@ static void drbbdup_insert_jumps(void *drcontext, drbbdup_per_thread *pt,
 				opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
 		instrlist_meta_preinsert(bb, where, instr);
 
-		instr = INSTR_CREATE_jcc(drcontext, OP_jz, opnd_create_pc(fp_revert_cache_pc));
+		instr = INSTR_CREATE_jcc(drcontext, OP_jz,
+				opnd_create_pc(fp_revert_cache_pc));
 		instrlist_meta_preinsert(bb, where, instr);
 	}
 }
@@ -1336,6 +1342,8 @@ static void drbbdup_handle_new_case() {
 		}
 	}
 
+	manager->manager_opts.enable_revert_check = false;
+
 	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
 
 	dr_rwlock_write_unlock(rw_lock);
@@ -1361,6 +1369,10 @@ static void drbbdup_handle_new_case() {
 
 static void drbbdup_handle_revert() {
 
+#ifdef ENABLE_STATS
+	drbbdup_stat_inc_revert();
+#endif
+
 	void *drcontext = dr_get_current_drcontext();
 
 	/* Must use DR_MC_ALL due to dr_redirect_execution */
@@ -1383,15 +1395,22 @@ static void drbbdup_handle_revert() {
 	if (!manager)
 		DR_ASSERT_MSG(false, "Can't find manager!\n");
 
-//	dr_fprintf(STDERR, "I am in revert!\n");
-
 	DR_ASSERT(!manager->manager_opts.is_reverted);
+	DR_ASSERT(manager->manager_opts.enable_revert_check);
+
 	manager->manager_opts.is_reverted = true;
 	manager->manager_opts.enable_revert_check = false;
 
 	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
 
 	dr_rwlock_write_unlock(rw_lock);
+
+	drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
+			drcontext, tls_idx);
+
+	uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
+	DR_ASSERT(pt->revert_counts[hash] == 0);
+	pt->revert_counts[hash] = opts.fp_settings.revert_threshold;
 
 	bool succ = dr_delete_shared_fragment(tag);
 	DR_ASSERT(succ);
@@ -1400,6 +1419,10 @@ static void drbbdup_handle_revert() {
 }
 
 static void drbbdup_handle_stop_revert() {
+
+#ifdef ENABLE_STATS
+	drbbdup_stat_inc_stop_revert();
+#endif
 
 	void *drcontext = dr_get_current_drcontext();
 
@@ -1424,14 +1447,19 @@ static void drbbdup_handle_stop_revert() {
 		DR_ASSERT_MSG(false, "Can't find manager!\n");
 
 	DR_ASSERT(manager->manager_opts.enable_revert_check);
+
 	manager->manager_opts.enable_revert_check = false;
-
-//	dr_fprintf(STDERR, "I am in stop revert!\n");
-
 
 	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
 
 	dr_rwlock_write_unlock(rw_lock);
+
+	drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
+			drcontext, tls_idx);
+
+	uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
+	DR_ASSERT(pt->revert_counts[hash] >= opts.fp_settings.revert_threshold * 2);
+	pt->revert_counts[hash] = opts.fp_settings.revert_threshold;
 
 	bool succ = dr_delete_shared_fragment(tag);
 	DR_ASSERT(succ);
@@ -1623,12 +1651,18 @@ static void drbbdup_set_options(drbbdup_options_t *ops_in,
 		opts.fp_settings.dup_limit = 3;
 		opts.fp_settings.required_size = 0;
 		opts.fp_settings.hit_threshold = 3500;
+		opts.fp_settings.enable_revert = true;
+		opts.fp_settings.revert_threshold = 5000
+
+
 	} else {
 		memcpy(&(opts.fp_settings), fp_settings_in,
 				sizeof(drbbdup_fp_settings_t));
 	}
 
 	DR_ASSERT(opts.fp_settings.dup_limit > 0);
+	DR_ASSERT(opts.fp_settings.revert_threshold < 30000);
+
 	memcpy(&(opts.functions), ops_in, sizeof(drbbdup_options_t));
 }
 
@@ -1802,6 +1836,20 @@ static void drbbdup_stat_inc_gen() {
 	dr_mutex_unlock(stat_mutex);
 }
 
+static void drbbdup_stat_inc_revert() {
+
+	dr_mutex_lock(stat_mutex);
+	revert_num++;
+	dr_mutex_unlock(stat_mutex);
+}
+
+static void drbbdup_stat_inc_stop_revert() {
+
+	dr_mutex_lock(stat_mutex);
+	stop_revert_num++;
+	dr_mutex_unlock(stat_mutex);
+}
+
 static void drbbdup_stat_inc_bb_size(uint size) {
 
 	dr_mutex_lock(stat_mutex);
@@ -1864,6 +1912,9 @@ static void drbbdup_stat_print_stats() {
 			total_size / bb_instrumented);
 
 	dr_fprintf(STDERR, "Number of fast paths generated (bb): %lu\n", gen_num);
+	dr_fprintf(STDERR, "Number of reverts (bb): %lu\n", revert_num);
+	dr_fprintf(STDERR, "Number of stop-reverts (bb): %lu\n", stop_revert_num);
+
 	dr_fprintf(STDERR, "Total bb exec: %lu\n", total_exec);
 	dr_fprintf(STDERR, "Total bails: %lu\n", total_bails);
 
