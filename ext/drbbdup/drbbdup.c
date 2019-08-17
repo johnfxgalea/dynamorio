@@ -1652,8 +1652,7 @@ static void drbbdup_set_options(drbbdup_options_t *ops_in,
 		opts.fp_settings.required_size = 0;
 		opts.fp_settings.hit_threshold = 3500;
 		opts.fp_settings.enable_revert = true;
-		opts.fp_settings.revert_threshold = 5000
-
+		opts.fp_settings.revert_threshold = 5000;
 
 	} else {
 		memcpy(&(opts.fp_settings), fp_settings_in,
