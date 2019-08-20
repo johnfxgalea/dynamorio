@@ -1386,6 +1386,8 @@ static void drbbdup_handle_revert() {
 	app_pc bb_pc = instr_get_app_pc(instr);
 	instrlist_clear_and_destroy(drcontext, ilist);
 
+	bool already_reverted = false;
+
 	/* Look up case manager */
 	dr_rwlock_write_lock(rw_lock);
 
@@ -1395,25 +1397,33 @@ static void drbbdup_handle_revert() {
 	if (!manager)
 		DR_ASSERT_MSG(false, "Can't find manager!\n");
 
-	DR_ASSERT(!manager->manager_opts.is_reverted);
-	DR_ASSERT(manager->manager_opts.enable_revert_check);
+	already_reverted = manager->manager_opts.is_reverted;
 
-	manager->manager_opts.is_reverted = true;
-	manager->manager_opts.enable_revert_check = false;
+	if (!already_reverted) {
+		DR_ASSERT(!manager->manager_opts.is_reverted);
+		DR_ASSERT(manager->manager_opts.enable_revert_check);
+		manager->manager_opts.is_reverted = true;
+		manager->manager_opts.enable_revert_check = false;
+
+	} else {
+		DR_ASSERT(!manager->manager_opts.enable_revert_check);
+	}
 
 	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
 
 	dr_rwlock_write_unlock(rw_lock);
 
-	drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
-			drcontext, tls_idx);
+	if (!already_reverted) {
+		drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
+				drcontext, tls_idx);
 
-	uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
-	DR_ASSERT(pt->revert_counts[hash] == 0);
-	pt->revert_counts[hash] = opts.fp_settings.revert_threshold;
+		uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
+		DR_ASSERT(pt->revert_counts[hash] == 0);
+		pt->revert_counts[hash] = opts.fp_settings.revert_threshold;
 
-	bool succ = dr_delete_shared_fragment(tag);
-	DR_ASSERT(succ);
+		bool succ = dr_delete_shared_fragment(tag);
+		DR_ASSERT(succ);
+	}
 
 	dr_redirect_execution(&mcontext);
 }
@@ -1437,6 +1447,8 @@ static void drbbdup_handle_stop_revert() {
 	app_pc bb_pc = instr_get_app_pc(instr);
 	instrlist_clear_and_destroy(drcontext, ilist);
 
+	bool already_reverted = false;
+
 	/* Look up case manager */
 	dr_rwlock_write_lock(rw_lock);
 
@@ -1446,23 +1458,30 @@ static void drbbdup_handle_stop_revert() {
 	if (!manager)
 		DR_ASSERT_MSG(false, "Can't find manager!\n");
 
-	DR_ASSERT(manager->manager_opts.enable_revert_check);
+	already_reverted = !manager->manager_opts.enable_revert_check;
 
-	manager->manager_opts.enable_revert_check = false;
+	if (!already_reverted) {
+		DR_ASSERT(manager->manager_opts.enable_revert_check);
+		manager->manager_opts.enable_revert_check = false;
+	}
 
 	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
 
 	dr_rwlock_write_unlock(rw_lock);
 
-	drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
-			drcontext, tls_idx);
+	if (!already_reverted) {
+		drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
+				drcontext, tls_idx);
 
-	uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
-	DR_ASSERT(pt->revert_counts[hash] >= opts.fp_settings.revert_threshold * 2);
-	pt->revert_counts[hash] = opts.fp_settings.revert_threshold;
+		uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
+		DR_ASSERT(
+				pt->revert_counts[hash]
+						>= opts.fp_settings.revert_threshold * 2);
+		pt->revert_counts[hash] = opts.fp_settings.revert_threshold;
 
-	bool succ = dr_delete_shared_fragment(tag);
-	DR_ASSERT(succ);
+		bool succ = dr_delete_shared_fragment(tag);
+		DR_ASSERT(succ);
+	}
 
 	dr_redirect_execution(&mcontext);
 }
