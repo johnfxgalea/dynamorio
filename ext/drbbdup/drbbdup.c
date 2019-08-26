@@ -957,20 +957,31 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation,
 				instr = INSTR_CREATE_sub(drcontext, hit_count_opnd, opnd);
 				instrlist_meta_preinsert(bb, where, instr);
 
+				/* Insert new case handling here */
+				instr = INSTR_CREATE_mov_imm(drcontext, mask_opnd,
+						opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
+				instrlist_meta_preinsert(bb, where, instr);
+
 				/* If counter has NOT reached threshold, jmp to default */
-				instr = INSTR_CREATE_jcc(drcontext, OP_jnz,
-						opnd_create_instr(done_label));
+				opnd = opnd_create_pc(fp_new_case_cache_pc);
+				instr = INSTR_CREATE_jcc(drcontext, OP_jz, opnd);
+				instrlist_meta_preinsert(bb, where, instr);
+
+				opnd = opnd_create_instr(done_label);
+				instr = INSTR_CREATE_jmp(drcontext, opnd);
+				instrlist_meta_preinsert(bb, where, instr);
+
+			} else {
+
+				/* Insert new case handling here */
+				instr = INSTR_CREATE_mov_imm(drcontext, mask_opnd,
+						opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
+				instrlist_meta_preinsert(bb, where, instr);
+
+				opnd = opnd_create_pc(fp_new_case_cache_pc);
+				instr = INSTR_CREATE_jmp(drcontext, opnd);
 				instrlist_meta_preinsert(bb, where, instr);
 			}
-
-			/* Insert new case handling here */
-			instr = INSTR_CREATE_mov_imm(drcontext, mask_opnd,
-					opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
-			instrlist_meta_preinsert(bb, where, instr);
-
-			opnd = opnd_create_pc(fp_new_case_cache_pc);
-			instr = INSTR_CREATE_jmp(drcontext, opnd);
-			instrlist_meta_preinsert(bb, where, instr);
 		}
 
 #ifdef ENABLE_STATS
