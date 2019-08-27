@@ -1364,11 +1364,15 @@ static void drbbdup_handle_revert() {
 		manager->manager_opts.is_reverted = true;
 		manager->manager_opts.enable_revert_check = false;
 
+	} else {
+		DR_ASSERT(!manager->manager_opts.enable_revert_check);
 	}
 
 	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
 
 	dr_rwlock_write_unlock(rw_lock);
+
+	already_reverted = !manager->manager_opts.enable_revert_check;
 
 	if (!already_reverted) {
 		drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
