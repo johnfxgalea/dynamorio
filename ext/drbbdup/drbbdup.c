@@ -490,11 +490,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 	int i;
 	for (i = total_dups - 2; i >= 0; i--) {
 
-		if (i == 0) {
-			skip_post = manager->default_case.skip_post;
-		} else {
-			skip_post = manager->cases[i - 1].skip_post;
-		}
+		skip_post = manager->cases[i].skip_post;
 
 		if (skip_post) {
 			/** Add the jmp to exit **/
@@ -519,11 +515,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 	/* Delete original. We are done from duplication. */
 	instrlist_clear_and_destroy(drcontext, original);
 
-	if (total_dups - 1 == 0) {
-		skip_post = manager->default_case.skip_post;
-	} else {
-		skip_post = manager->cases[total_dups - 2].skip_post;
-	}
+	skip_post = manager->default_case.skip_post;
 
 	/**
 	 * Add the exit label for the last instance of the bb.
@@ -784,7 +776,7 @@ static bool include_path_gen(drbbdup_manager_t *manager) {
 	int i;
 	for (i = 0; i < opts.fp_settings.dup_limit; i++) {
 
-		drbbdup_case_t *drbbdup_case = &(manager->cases[i - 1]);
+		drbbdup_case_t *drbbdup_case = &(manager->cases[i]);
 
 		if (!drbbdup_case->is_defined) {
 			found = true;
@@ -1074,6 +1066,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 		drbbdup_label_t label_info;
 		instr_t * next_label = drbbdup_forward_next(drcontext, bb, post_instr,
 				&label_info);
+		DR_ASSERT(next_label);
 		DR_ASSERT(label_info == DRBBDUP_LABEL_NORMAL);
 
 		drbbdup_insert_chain(drcontext, bb, post_instr, manager, next_label,
@@ -1371,8 +1364,6 @@ static void drbbdup_handle_revert() {
 		manager->manager_opts.is_reverted = true;
 		manager->manager_opts.enable_revert_check = false;
 
-	} else {
-		DR_ASSERT(!manager->manager_opts.enable_revert_check);
 	}
 
 	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
