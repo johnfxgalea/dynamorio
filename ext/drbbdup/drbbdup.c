@@ -1356,7 +1356,7 @@ static void drbbdup_handle_revert() {
 	if (!manager)
 		DR_ASSERT_MSG(false, "Can't find manager!\n");
 
-	already_reverted = manager->manager_opts.is_reverted;
+	already_reverted = !manager->manager_opts.enable_revert_check;
 
 	if (!already_reverted) {
 		DR_ASSERT(!manager->manager_opts.is_reverted);
@@ -1371,8 +1371,6 @@ static void drbbdup_handle_revert() {
 	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
 
 	dr_rwlock_write_unlock(rw_lock);
-
-	already_reverted = !manager->manager_opts.enable_revert_check;
 
 	if (!already_reverted) {
 		drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
