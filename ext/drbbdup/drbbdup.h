@@ -58,7 +58,7 @@ typedef struct {
  */
 typedef bool (*drbbdup_create_default_manager_t)(void *drbbdup_ctx,
         void *drcontext, void *tag, instrlist_t *bb, drbbdup_manager_options_t *options,
-        uint *default_case_value, bool *skip_post, void *user_data);
+        uint *default_case_value, void *user_data);
 
 /**
  * TODO
@@ -104,14 +104,6 @@ typedef void (*drbbdup_instrument_bb_t)(void *drcontext, instrlist_t *bb,
 typedef void (*drbbdup_nan_instrument_bb_t)(void *drcontext, instrlist_t *bb,
         instr_t *where, void *user_data);
 
-
-/**
- * TODO
- */
-typedef void (*drbbdup_instrument_post_handling_t)(void *drcontext, instrlist_t *bb,
-        instr_t *where, void *user_data, void *pre_analysis_data);
-
-
 /**
  * TODO
  */
@@ -129,7 +121,6 @@ typedef struct {
     drbbdup_instrument_bb_t instrument_bb;
     drbbdup_nan_instrument_bb_t nan_instrument_bb;
     drbbdup_get_comparator_t get_comparator;
-    drbbdup_instrument_post_handling_t post_handling;
     void *user_data;
 } drbbdup_options_t;
 
@@ -184,13 +175,15 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void);
  * TODO
  */
 DR_EXPORT drbbdup_status_t drbbdup_register_case_value(void *drbbdup_ctx,
-        uint case_val, bool skip_post);
+        uint case_val);
 
 /**
  * TODO
  */
 DR_EXPORT drbbdup_status_t drbbdup_unregister_case_value(void *drbbdup_ctx,
         uint case_val);
+
+DR_EXPORT bool drbbdup_is_last_instr(instr_t *instr);
 
 #ifdef __cplusplus
 }
