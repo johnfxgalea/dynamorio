@@ -37,6 +37,7 @@
 #define DRBBDUP_FLAG_REG_SLOT 2
 #define DRBBDUP_REVERT_TABLE_SLOT 3
 #define DRBBDUP_HIT_TABLE_SLOT 4
+#define DRBBDUP_PC_SLOT 5
 
 #define DRBBDUP_SCRATCH DR_REG_XAX
 
@@ -179,7 +180,6 @@ file_t time_file;
 /**************************************************************
  * Helpers
  */
-
 static opnd_t drbbdup_get_tls_raw_slot_opnd(int slot_idx) {
 
 	return opnd_create_far_base_disp_ex(tls_raw_reg, REG_NULL, REG_NULL, 1,
@@ -750,7 +750,7 @@ static bool include_path_gen(drbbdup_manager_t *manager) {
 }
 
 static void drbbdup_insert_encoding(void *drcontext, drbbdup_per_thread *pt,
-		app_pc translation, void *tag, instrlist_t *bb, instr_t *where,
+		app_pc translation_pc, void *tag, instrlist_t *bb, instr_t *where,
 		drbbdup_manager_t *manager) {
 
 	instr_t *instr;
@@ -799,7 +799,7 @@ static void drbbdup_insert_encoding(void *drcontext, drbbdup_per_thread *pt,
 				revert_table_opnd);
 		instrlist_meta_preinsert(bb, where, instr);
 
-		uint hash = drbbdup_get_hitcount_hash((intptr_t) translation);
+		uint hash = drbbdup_get_hitcount_hash((intptr_t) translation_pc);
 		opnd_t revert_count_opnd = OPND_CREATE_MEM16(DRBBDUP_SCRATCH,
 				hash * sizeof(ushort));
 		opnd = opnd_create_immed_uint(1, OPSZ_2);
@@ -814,6 +814,11 @@ static void drbbdup_insert_encoding(void *drcontext, drbbdup_per_thread *pt,
 
 		instr = INSTR_CREATE_mov_imm(drcontext, scratch_reg_opnd,
 				opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
+		instrlist_meta_preinsert(bb, where, instr);
+
+		opnd_t pc_opnd = drbbdup_get_tls_raw_slot_opnd(DRBBDUP_PC_SLOT);
+		instr = INSTR_CREATE_mov_imm(drcontext, pc_opnd,
+				opnd_create_immed_int((intptr_t) translation_pc, OPSZ_PTR));
 		instrlist_meta_preinsert(bb, where, instr);
 
 		instr = INSTR_CREATE_jcc(drcontext, OP_jge,
@@ -849,7 +854,7 @@ static void drbbdup_insert_chain(void *drcontext, instrlist_t *bb,
 	drbbdup_insert_landing_restoration(drcontext, bb, where, manager);
 }
 
-static void drbbdup_insert_chain_end(void *drcontext, app_pc translation,
+static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
 		void *tag, instrlist_t *bb, instr_t *where, drbbdup_manager_t *manager) {
 
 	instr_t *instr;
@@ -904,7 +909,7 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation,
 						hit_table_opnd);
 				instrlist_meta_preinsert(bb, where, instr);
 
-				uint hash = drbbdup_get_hitcount_hash((intptr_t) translation);
+				uint hash = drbbdup_get_hitcount_hash((intptr_t) translation_pc);
 				opnd_t hit_count_opnd = OPND_CREATE_MEM16(DRBBDUP_SCRATCH,
 						hash * sizeof(ushort));
 				opnd = opnd_create_immed_uint(1, OPSZ_2);
@@ -914,6 +919,11 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation,
 				/* Insert new case handling here */
 				instr = INSTR_CREATE_mov_imm(drcontext, mask_opnd,
 						opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
+				instrlist_meta_preinsert(bb, where, instr);
+
+				opnd_t pc_opnd = drbbdup_get_tls_raw_slot_opnd(DRBBDUP_PC_SLOT);
+				instr = INSTR_CREATE_mov_imm(drcontext, pc_opnd,
+						opnd_create_immed_int((intptr_t) translation_pc, OPSZ_PTR));
 				instrlist_meta_preinsert(bb, where, instr);
 
 				opnd = opnd_create_pc(fp_new_case_cache_pc);
@@ -930,6 +940,11 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation,
 				/* Insert new case handling here */
 				instr = INSTR_CREATE_mov_imm(drcontext, mask_opnd,
 						opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
+				instrlist_meta_preinsert(bb, where, instr);
+
+				opnd_t pc_opnd = drbbdup_get_tls_raw_slot_opnd(DRBBDUP_PC_SLOT);
+				instr = INSTR_CREATE_mov_imm(drcontext, pc_opnd,
+						opnd_create_immed_int((intptr_t) translation_pc, OPSZ_PTR));
 				instrlist_meta_preinsert(bb, where, instr);
 
 				opnd = opnd_create_pc(fp_new_case_cache_pc);
@@ -958,7 +973,7 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation,
 		instr = INSTR_CREATE_mov_ld(drcontext, mask_opnd, revert_table_opnd);
 		instrlist_meta_preinsert(bb, where, instr);
 
-		uint hash = drbbdup_get_hitcount_hash((intptr_t) translation);
+		uint hash = drbbdup_get_hitcount_hash((intptr_t) translation_pc);
 		opnd_t revert_count_opnd = OPND_CREATE_MEM16(DR_REG_XAX,
 				hash * sizeof(ushort));
 		opnd = opnd_create_immed_uint(2, OPSZ_2);
@@ -1216,11 +1231,7 @@ static void drbbdup_handle_new_case() {
 	dr_get_mcontext(drcontext, &mcontext);
 
 	void *tag = (void *) reg_get_value(DRBBDUP_SCRATCH, &mcontext);
-
-	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
-	instr_t *instr = instrlist_first_app(ilist);
-	app_pc bb_pc = instr_get_app_pc(instr);
-	instrlist_clear_and_destroy(drcontext, ilist);
+	app_pc bb_pc = (app_pc) drbbdup_get_spilled(DRBBDUP_PC_SLOT);
 
 	/* Get the missing case */
 	reg_t conditional_val = (reg_t) drbbdup_get_comparator();
@@ -1288,11 +1299,7 @@ static void drbbdup_handle_revert() {
 	dr_get_mcontext(drcontext, &mcontext);
 
 	void *tag = (void *) reg_get_value(DRBBDUP_SCRATCH, &mcontext);
-
-	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
-	instr_t *instr = instrlist_first_app(ilist);
-	app_pc bb_pc = instr_get_app_pc(instr);
-	instrlist_clear_and_destroy(drcontext, ilist);
+	app_pc bb_pc = (app_pc) drbbdup_get_spilled(DRBBDUP_PC_SLOT);
 
 	bool already_reverted = false;
 
@@ -1353,11 +1360,7 @@ static void drbbdup_handle_stop_revert() {
 	dr_get_mcontext(drcontext, &mcontext);
 
 	void *tag = (void *) reg_get_value(DRBBDUP_SCRATCH, &mcontext);
-
-	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
-	instr_t *instr = instrlist_first_app(ilist);
-	app_pc bb_pc = instr_get_app_pc(instr);
-	instrlist_clear_and_destroy(drcontext, ilist);
+	app_pc bb_pc = (app_pc) drbbdup_get_spilled(DRBBDUP_PC_SLOT);
 
 	bool already_reverted = false;
 
@@ -1631,7 +1634,7 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
 		if (tls_idx == -1)
 			return DRBBDUP_ERROR;
 
-		dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 5, 0);
+		dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 6, 0);
 
 		fp_new_case_cache_pc = init_fp_cache(drbbdup_handle_new_case);
 		fp_revert_cache_pc = init_fp_cache(drbbdup_handle_revert);
@@ -1724,7 +1727,7 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 				|| !drmgr_unregister_thread_exit_event(drbbdup_thread_exit))
 			return DRBBDUP_ERROR;
 
-		dr_raw_tls_cfree(tls_raw_base, 5);
+		dr_raw_tls_cfree(tls_raw_base, 6);
 		drmgr_unregister_tls_field(tls_idx);
 //        dr_unregister_delete_event(deleted_frag);
 		drreg_exit();
