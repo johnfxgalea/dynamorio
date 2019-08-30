@@ -41,7 +41,7 @@
 #define DRBBDUP_SCRATCH DR_REG_XAX
 
 // Comment out macro for no stats
-//#define ENABLE_STATS 1
+#define ENABLE_STATS 1
 
 /*************************************************************************
  * Structs
@@ -295,11 +295,11 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 	app_pc pc = instr_get_app_pc(instrlist_first_app(bb));
 
-	if (translating)
+	if (translating || !for_trace)
 		return DR_EMIT_DEFAULT;
 
 #ifdef ENABLE_STATS
-	if (!for_trace)
+	if (for_trace)
 	drbbdup_stat_inc_bb();
 #endif
 
@@ -677,6 +677,9 @@ static void drbbdup_analyse_bbs(void *drcontext, drbbdup_per_thread *pt,
 static dr_emit_flags_t drbbdup_analyse_phase(void *drcontext, void *tag,
 		instrlist_t *bb, bool for_trace, bool translating, void *user_data) {
 
+	if (!for_trace)
+		return DR_EMIT_DEFAULT;
+
 	drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
 			drcontext, tls_idx);
 
@@ -997,7 +1000,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
 			&case_manager_table, pc);
 
-	if (manager == NULL || manager->manager_opts.is_reverted) {
+	if (manager == NULL || manager->manager_opts.is_reverted || !for_trace) {
 		/** No fast path code wanted! Instrument normally and return! **/
 
 		dr_rwlock_read_unlock(rw_lock);
