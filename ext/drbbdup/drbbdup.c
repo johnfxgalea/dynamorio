@@ -1322,6 +1322,10 @@ static void drbbdup_handle_revert() {
 		drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
 				drcontext, tls_idx);
 
+		LOG(drcontext, DR_LOG_ALL, 2, "%s Reverting for basic block %p\n",
+				__FUNCTION__, bb_pc);
+
+
 		uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
 		DR_ASSERT(pt->revert_counts[hash] == 0);
 		pt->revert_counts[hash] = opts.fp_settings.revert_threshold;
