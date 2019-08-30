@@ -913,13 +913,13 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation,
 						opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
 				instrlist_meta_preinsert(bb, where, instr);
 
-				/* If counter has NOT reached threshold, jmp to default */
 				opnd = opnd_create_pc(fp_new_case_cache_pc);
 				instr = INSTR_CREATE_jcc(drcontext, OP_jz, opnd);
 				instrlist_meta_preinsert(bb, where, instr);
 
+				/* If counter has NOT reached threshold, jmp to default */
 				opnd = opnd_create_instr(done_label);
-				instr = INSTR_CREATE_jmp(drcontext, opnd);
+				instr = INSTR_CREATE_jmp_short(drcontext, opnd);
 				instrlist_meta_preinsert(bb, where, instr);
 
 			} else {
