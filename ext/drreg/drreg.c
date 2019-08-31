@@ -2588,10 +2588,13 @@ tls_data_init(per_thread_t *pt)
     }
     pt->aflags.native = true;
     drvector_init(&pt->aflags.live, 20, false /*!synch*/, NULL);
+
+    pt->xmm_spill_start = dr_global_alloc((REG_XMM_SIZE * MAX_XMM_SPILLS) + 15);
+     pt->xmm_spills = (byte *) ALIGN_FORWARD(pt->xmm_spill_start, 16);
 }
 
 static void
-tls_data_free(void *drcontext, per_thread_t *pt)
+tls_data_free(per_thread_t *pt)
 {
     reg_id_t reg;
     for (reg = DR_REG_START_GPR; reg <= DR_REG_STOP_GPR; reg++) {
@@ -2602,7 +2605,7 @@ tls_data_free(void *drcontext, per_thread_t *pt)
     }
     drvector_delete(&pt->aflags.live);
 
-    dr_thread_free(drcontext, pt->xmm_spill_start, (REG_XMM_SIZE * MAX_XMM_SPILLS) + 15);
+    dr_global_free(pt->xmm_spill_start, (REG_XMM_SIZE * MAX_XMM_SPILLS) + 15);
 }
 
 static void
@@ -2615,8 +2618,6 @@ drreg_thread_init(void *drcontext)
 
     /* Place the pointer to the xmm block inside a slot. */
     void **addr = (void **)(pt->tls_seg_base + tls_main_offs);
-    pt->xmm_spill_start =  dr_thread_alloc(drcontext, (REG_XMM_SIZE * MAX_XMM_SPILLS) + 15);
-    pt->xmm_spills = ALIGN_FORWARD(pt->xmm_spill_start, 16);
     *addr = pt->xmm_spills;
 }
 
@@ -2624,7 +2625,7 @@ static void
 drreg_thread_exit(void *drcontext)
 {
     per_thread_t *pt = (per_thread_t *)drmgr_get_tls_field(drcontext, tls_idx);
-    tls_data_free(drcontext, pt);
+    tls_data_free(pt);
     dr_thread_free(drcontext, pt, sizeof(*pt));
 }
 
