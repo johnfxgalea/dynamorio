@@ -281,7 +281,7 @@ spill_xmm_reg(void *drcontext, per_thread_t *pt, reg_id_t reg, uint slot,
     opnd_t mem_opnd = opnd_create_base_disp(xmm_block_reg, DR_REG_NULL, 1,
                                             slot * REG_XMM_SIZE, OPSZ_16);
     opnd_t spill_reg_opnd = opnd_create_reg(reg);
-    PRE(ilist, where, INSTR_CREATE_movdqu(drcontext, mem_opnd, spill_reg_opnd));
+    PRE(ilist, where, INSTR_CREATE_movdqa(drcontext, mem_opnd, spill_reg_opnd));
 }
 
 /* Up to caller to update pt->reg.  This routine updates pt->slot_use if release==true. */
@@ -318,7 +318,7 @@ restore_xmm_reg(void *drcontext, per_thread_t *pt, reg_id_t reg, uint slot,
     opnd_t mem_opnd = opnd_create_base_disp(xmm_block_reg, DR_REG_NULL, 0,
                                             slot * REG_XMM_SIZE, OPSZ_16);
     opnd_t restore_reg_opnd = opnd_create_reg(reg);
-    PRE(ilist, where, INSTR_CREATE_movdqu(drcontext, restore_reg_opnd, mem_opnd));
+    PRE(ilist, where, INSTR_CREATE_movdqa(drcontext, restore_reg_opnd, mem_opnd));
 }
 
 static reg_t
@@ -2612,6 +2612,8 @@ drreg_thread_init(void *drcontext)
 
     /* Place the pointer to the xmm block inside a slot. */
     void **addr = (void **)(pt->tls_seg_base + tls_main_offs);
+
+    DR_ASSERT(((unsigned long)pt->xmm_spills & 15) == 0);
     *addr = pt->xmm_spills;
 }
 
