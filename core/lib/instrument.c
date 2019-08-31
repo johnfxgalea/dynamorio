@@ -6774,8 +6774,8 @@ dr_delete_shared_fragment(void *tag)
 
     /* suspend threads to invalidate private ibts */
     thread_record_t **flush_threads;
-    int flush_num_threads;
-    const thread_synch_state_t desired_state =
+      int flush_num_threads;
+      const thread_synch_state_t desired_state =
               THREAD_SYNCH_SUSPENDED_VALID_MCONTEXT_OR_NO_XFER;
       synch_with_all_threads(desired_state, &flush_threads,
               &flush_num_threads, THREAD_SYNCH_NO_LOCKS_NO_XFER,
@@ -6794,16 +6794,16 @@ dr_delete_shared_fragment(void *tag)
               return false;
           }
 
-//          if (TEST(FRAG_IS_TRACE, f->flags)) {
-//              d_r_mutex_lock(&trace_building_lock);
-//          }
-//          d_r_mutex_lock(&bb_building_lock);
+          if (TEST(FRAG_IS_TRACE, f->flags)) {
+              d_r_mutex_lock(&trace_building_lock);
+          }
+          d_r_mutex_lock(&bb_building_lock);
 
           /*  check if frag is already deleted*/
           if (TEST(FRAG_WAS_DELETED, f->flags)) {
-//              d_r_mutex_unlock(&bb_building_lock);
-//              if (TEST(FRAG_IS_TRACE, f->flags))
-//                  d_r_mutex_unlock(&trace_building_lock);
+              d_r_mutex_unlock(&bb_building_lock);
+              if (TEST(FRAG_IS_TRACE, f->flags))
+                  d_r_mutex_unlock(&trace_building_lock);
               enter_nolinking(dcontext, NULL, false);
               end_synch_with_all_threads(flush_threads, flush_num_threads, true);
 
@@ -6819,6 +6819,7 @@ dr_delete_shared_fragment(void *tag)
           if (TEST(FRAG_LINKED_INCOMING, f->flags))
               unlink_fragment_incoming(GLOBAL_DCONTEXT, f);
           incoming_remove_fragment(GLOBAL_DCONTEXT, f);
+
 
           /* invalidate private IBTs */
           if (SHARED_IB_TARGETS()) {
@@ -6844,10 +6845,10 @@ dr_delete_shared_fragment(void *tag)
           if (!TEST(FRAG_HAS_TRANSLATION_INFO, f->flags))
               fragment_record_translation_info(dcontext, f, NULL);
 
-//          d_r_mutex_unlock(&bb_building_lock);
-//          if (TEST(FRAG_IS_TRACE, f->flags)) {
-//              d_r_mutex_unlock(&trace_building_lock);
-//          }
+          d_r_mutex_unlock(&bb_building_lock);
+          if (TEST(FRAG_IS_TRACE, f->flags)) {
+              d_r_mutex_unlock(&trace_building_lock);
+          }
 
           /* resume threads again as adding frag for lazy deletion
            * requires no locks. Frag is completely unreachable, so should be

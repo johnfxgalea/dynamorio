@@ -37,12 +37,11 @@
 #define DRBBDUP_FLAG_REG_SLOT 2
 #define DRBBDUP_REVERT_TABLE_SLOT 3
 #define DRBBDUP_HIT_TABLE_SLOT 4
-#define DRBBDUP_PC_SLOT 5
 
 #define DRBBDUP_SCRATCH DR_REG_XAX
 
 // Comment out macro for no stats
-#define ENABLE_STATS 1
+//#define ENABLE_STATS 1
 
 /*************************************************************************
  * Structs
@@ -295,11 +294,11 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 	app_pc pc = instr_get_app_pc(instrlist_first_app(bb));
 
-	if (translating || !for_trace)
+	if (translating)
 		return DR_EMIT_DEFAULT;
 
 #ifdef ENABLE_STATS
-	if (for_trace)
+	if (!for_trace)
 	drbbdup_stat_inc_bb();
 #endif
 
@@ -677,9 +676,6 @@ static void drbbdup_analyse_bbs(void *drcontext, drbbdup_per_thread *pt,
 static dr_emit_flags_t drbbdup_analyse_phase(void *drcontext, void *tag,
 		instrlist_t *bb, bool for_trace, bool translating, void *user_data) {
 
-	if (!for_trace)
-		return DR_EMIT_DEFAULT;
-
 	drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
 			drcontext, tls_idx);
 
@@ -816,11 +812,6 @@ static void drbbdup_insert_encoding(void *drcontext, drbbdup_per_thread *pt,
 				opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
 		instrlist_meta_preinsert(bb, where, instr);
 
-		opnd_t pc_opnd = drbbdup_get_tls_raw_slot_opnd(DRBBDUP_PC_SLOT);
-		instr = INSTR_CREATE_mov_imm(drcontext, pc_opnd,
-				opnd_create_immed_int((intptr_t) translation_pc, OPSZ_PTR));
-		instrlist_meta_preinsert(bb, where, instr);
-
 		instr = INSTR_CREATE_jcc(drcontext, OP_jge,
 				opnd_create_pc(fp_stop_revert_cache_pc));
 		instrlist_meta_preinsert(bb, where, instr);
@@ -921,11 +912,6 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
 						opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
 				instrlist_meta_preinsert(bb, where, instr);
 
-				opnd_t pc_opnd = drbbdup_get_tls_raw_slot_opnd(DRBBDUP_PC_SLOT);
-				instr = INSTR_CREATE_mov_imm(drcontext, pc_opnd,
-						opnd_create_immed_int((intptr_t) translation_pc, OPSZ_PTR));
-				instrlist_meta_preinsert(bb, where, instr);
-
 				opnd = opnd_create_pc(fp_new_case_cache_pc);
 				instr = INSTR_CREATE_jcc(drcontext, OP_jz, opnd);
 				instrlist_meta_preinsert(bb, where, instr);
@@ -940,11 +926,6 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
 				/* Insert new case handling here */
 				instr = INSTR_CREATE_mov_imm(drcontext, mask_opnd,
 						opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
-				instrlist_meta_preinsert(bb, where, instr);
-
-				opnd_t pc_opnd = drbbdup_get_tls_raw_slot_opnd(DRBBDUP_PC_SLOT);
-				instr = INSTR_CREATE_mov_imm(drcontext, pc_opnd,
-						opnd_create_immed_int((intptr_t) translation_pc, OPSZ_PTR));
 				instrlist_meta_preinsert(bb, where, instr);
 
 				opnd = opnd_create_pc(fp_new_case_cache_pc);
@@ -1015,7 +996,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
 			&case_manager_table, pc);
 
-	if (manager == NULL || manager->manager_opts.is_reverted || !for_trace) {
+	if (manager == NULL || manager->manager_opts.is_reverted) {
 		/** No fast path code wanted! Instrument normally and return! **/
 
 		dr_rwlock_read_unlock(rw_lock);
@@ -1051,9 +1032,10 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 				drbbdup_case);
 
 #ifdef ENABLE_STATS
-		drbbdup_stat_clean_case_entry(drcontext, bb, instr_get_next(instr),
+		drbbdup_stat_clean_case_entry(drcontext, bb, next_instr,
 				pt->case_index);
 #endif
+
 	} else {
 
 		drbbdup_label_t label_info;
@@ -1098,7 +1080,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 			}
 
 #ifdef ENABLE_STATS
-			drbbdup_stat_clean_case_entry(drcontext, bb, instr_get_next(instr),
+			drbbdup_stat_clean_case_entry(drcontext, bb, next_instr,
 					pt->case_index);
 #endif
 
@@ -1231,7 +1213,11 @@ static void drbbdup_handle_new_case() {
 	dr_get_mcontext(drcontext, &mcontext);
 
 	void *tag = (void *) reg_get_value(DRBBDUP_SCRATCH, &mcontext);
-	app_pc bb_pc = (app_pc) drbbdup_get_spilled(DRBBDUP_PC_SLOT);
+
+	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
+	instr_t *instr = instrlist_first_app(ilist);
+	app_pc bb_pc = instr_get_app_pc(instr);
+	instrlist_clear_and_destroy(drcontext, ilist);
 
 	/* Get the missing case */
 	reg_t conditional_val = (reg_t) drbbdup_get_comparator();
@@ -1299,7 +1285,10 @@ static void drbbdup_handle_revert() {
 	dr_get_mcontext(drcontext, &mcontext);
 
 	void *tag = (void *) reg_get_value(DRBBDUP_SCRATCH, &mcontext);
-	app_pc bb_pc = (app_pc) drbbdup_get_spilled(DRBBDUP_PC_SLOT);
+	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
+	instr_t *instr = instrlist_first_app(ilist);
+	app_pc bb_pc = instr_get_app_pc(instr);
+	instrlist_clear_and_destroy(drcontext, ilist);
 
 	bool already_reverted = false;
 
@@ -1360,7 +1349,11 @@ static void drbbdup_handle_stop_revert() {
 	dr_get_mcontext(drcontext, &mcontext);
 
 	void *tag = (void *) reg_get_value(DRBBDUP_SCRATCH, &mcontext);
-	app_pc bb_pc = (app_pc) drbbdup_get_spilled(DRBBDUP_PC_SLOT);
+
+	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
+	instr_t *instr = instrlist_first_app(ilist);
+	app_pc bb_pc = instr_get_app_pc(instr);
+	instrlist_clear_and_destroy(drcontext, ilist);
 
 	bool already_reverted = false;
 
