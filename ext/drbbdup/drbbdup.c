@@ -802,17 +802,11 @@ static void drbbdup_insert_encoding(void *drcontext, drbbdup_per_thread *pt,
 		instr = INSTR_CREATE_add(drcontext, revert_count_opnd, opnd);
 		instrlist_meta_preinsert(bb, where, instr);
 
-		instr = INSTR_CREATE_cmp(drcontext, revert_count_opnd,
-				opnd_create_immed_uint(
-						(ptr_uint_t ) (opts.fp_settings.revert_threshold * 2),
-						OPSZ_2));
-		instrlist_meta_preinsert(bb, where, instr);
-
 		instr = INSTR_CREATE_mov_imm(drcontext, scratch_reg_opnd,
 				opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
 		instrlist_meta_preinsert(bb, where, instr);
 
-		instr = INSTR_CREATE_jcc(drcontext, OP_jge,
+		instr = INSTR_CREATE_jcc(drcontext, OP_jo,
 				opnd_create_pc(fp_stop_revert_cache_pc));
 		instrlist_meta_preinsert(bb, where, instr);
 	}
@@ -1382,9 +1376,6 @@ static void drbbdup_handle_stop_revert() {
 				drcontext, tls_idx);
 
 		uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
-		DR_ASSERT(
-				pt->revert_counts[hash]
-						>= opts.fp_settings.revert_threshold * 2);
 		pt->revert_counts[hash] = opts.fp_settings.revert_threshold;
 
 		bool succ = dr_delete_shared_fragment(tag);
