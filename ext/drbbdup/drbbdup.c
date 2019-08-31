@@ -784,32 +784,32 @@ static void drbbdup_insert_encoding(void *drcontext, drbbdup_per_thread *pt,
 
 	opnd_t scratch_reg_opnd = opnd_create_reg(DRBBDUP_SCRATCH);
 
-	if (manager->manager_opts.enable_revert_check) {
-
-		DR_ASSERT(!manager->manager_opts.is_reverted);
-
-		opnd_t revert_table_opnd = drbbdup_get_tls_raw_slot_opnd(
-		DRBBDUP_REVERT_TABLE_SLOT);
-
-		instr = INSTR_CREATE_mov_ld(drcontext, scratch_reg_opnd,
-				revert_table_opnd);
-		instrlist_meta_preinsert(bb, where, instr);
-
-		uint hash = drbbdup_get_hitcount_hash((intptr_t) translation_pc);
-		opnd_t revert_count_opnd = OPND_CREATE_MEM16(DRBBDUP_SCRATCH,
-				hash * sizeof(ushort));
-		opnd = opnd_create_immed_uint(1, OPSZ_2);
-		instr = INSTR_CREATE_add(drcontext, revert_count_opnd, opnd);
-		instrlist_meta_preinsert(bb, where, instr);
-
-		instr = INSTR_CREATE_mov_imm(drcontext, scratch_reg_opnd,
-				opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
-		instrlist_meta_preinsert(bb, where, instr);
-
-		instr = INSTR_CREATE_jcc(drcontext, OP_jo,
-				opnd_create_pc(fp_stop_revert_cache_pc));
-		instrlist_meta_preinsert(bb, where, instr);
-	}
+//	if (manager->manager_opts.enable_revert_check) {
+//
+//		DR_ASSERT(!manager->manager_opts.is_reverted);
+//
+//		opnd_t revert_table_opnd = drbbdup_get_tls_raw_slot_opnd(
+//		DRBBDUP_REVERT_TABLE_SLOT);
+//
+//		instr = INSTR_CREATE_mov_ld(drcontext, scratch_reg_opnd,
+//				revert_table_opnd);
+//		instrlist_meta_preinsert(bb, where, instr);
+//
+//		uint hash = drbbdup_get_hitcount_hash((intptr_t) translation_pc);
+//		opnd_t revert_count_opnd = OPND_CREATE_MEM16(DRBBDUP_SCRATCH,
+//				hash * sizeof(ushort));
+//		opnd = opnd_create_immed_uint(1, OPSZ_2);
+//		instr = INSTR_CREATE_add(drcontext, revert_count_opnd, opnd);
+//		instrlist_meta_preinsert(bb, where, instr);
+//
+//		instr = INSTR_CREATE_mov_imm(drcontext, scratch_reg_opnd,
+//				opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
+//		instrlist_meta_preinsert(bb, where, instr);
+//
+//		instr = INSTR_CREATE_jcc(drcontext, OP_jo,
+//				opnd_create_pc(fp_stop_revert_cache_pc));
+//		instrlist_meta_preinsert(bb, where, instr);
+//	}
 
 	/**
 	 * Load the comparator value to register.
