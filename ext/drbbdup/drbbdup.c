@@ -29,7 +29,7 @@
 #endif
 
 #define HASH_BIT_TABLE 13
-#define TABLE_SIZE 65536
+#define TABLE_SIZE 32768
 
 /* THREAD SLOTS */
 #define DRBBDUP_COMPARATOR_SLOT 0
