@@ -2276,7 +2276,7 @@ is_our_spill_or_restore(void *drcontext, instr_t *instr, instr_t *next_instr,
     } else if (tls && offs == tls_main_offs && !(is_spilled)) {
 
         DR_ASSERT(next_instr);
-        DR_ASSERT(instr_get_opcode(next_instr) == OP_movdqu);
+        DR_ASSERT(instr_get_opcode(next_instr) == OP_movdqa);
 
         is_xmm = true;
         opnd_t dst = instr_get_dst(next_instr, 0);
