@@ -95,7 +95,7 @@ typedef void (*drbbdup_nan_analyse_bb_t)(void *drcontext, instrlist_t *bb,
  * TODO
  */
 typedef void (*drbbdup_instrument_bb_t)(void *drcontext, instrlist_t *bb,
-        instr_t *where, uint case_val, void *user_data, void *pre_analysis_data,
+		instr_t *instr, instr_t *where, uint case_val, void *user_data, void *pre_analysis_data,
         void *analysis_data);
 
 /**
@@ -183,7 +183,7 @@ DR_EXPORT drbbdup_status_t drbbdup_register_case_value(void *drbbdup_ctx,
 DR_EXPORT drbbdup_status_t drbbdup_unregister_case_value(void *drbbdup_ctx,
         uint case_val);
 
-DR_EXPORT bool drbbdup_is_last_instr(instr_t *instr);
+DR_EXPORT bool drbbdup_is_last_instr(instrlist_t *bb, instr_t *instr);
 
 #ifdef __cplusplus
 }

@@ -384,20 +384,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 	 * We needed to do this for unrolling rep.
 	 */
 
-	/* We create a duplication here to keep track of original bb */
-	instrlist_t *original = instrlist_clone(drcontext, bb);
-	instr_t *last = instrlist_last_app(original);
-
-	/**
-	 * If the last instruction is a sytem call/cti, we remove it from the original.
-	 * This is done so we do not duplicate these instructions.
-	 */
-	if (instr_is_syscall(last) || instr_is_cti(last) || instr_is_ubr(last)
-			|| instr_is_interrupt(last)) {
-		instrlist_remove(original, last);
-		instr_destroy(drcontext, last);
-	}
-
 	if (manager == NULL) {
 		/* If manager is not available, we need to create a default one */
 		manager = dr_global_alloc(sizeof(drbbdup_manager_t));
@@ -418,7 +404,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 		manager->manager_opts.is_reverted = false;
 
 		bool consider = opts.functions.create_manager(manager, drcontext, tag,
-				original, &(manager->manager_opts),
+				bb, &(manager->manager_opts),
 				&(manager->default_case.condition_val),
 				opts.functions.user_data);
 
@@ -430,17 +416,29 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 			dr_rwlock_write_unlock(rw_lock);
 
-			instrlist_clear_and_destroy(drcontext, original);
 			/** Destroy the manager. **/
 			dr_global_free(manager->cases,
 					sizeof(drbbdup_case_t) * opts.fp_settings.dup_limit);
 			dr_global_free(manager, sizeof(drbbdup_manager_t));
-
 			return DR_EMIT_DEFAULT;
 		}
 
 		manager->default_case.is_defined = true;
 		hashtable_add(&case_manager_table, pc, manager);
+	}
+
+	/* We create a duplication here to keep track of original bb */
+	instrlist_t *original = instrlist_clone(drcontext, bb);
+	instr_t *last = instrlist_last_app(original);
+
+	/**
+	 * If the last instruction is a sytem call/cti, we remove it from the original.
+	 * This is done so we do not duplicate these instructions.
+	 */
+	if (instr_is_syscall(last) || instr_is_cti(last) || instr_is_ubr(last)
+			|| instr_is_interrupt(last)) {
+		instrlist_remove(original, last);
+		instr_destroy(drcontext, last);
 	}
 
 	DR_ASSERT(manager != NULL);
@@ -583,8 +581,21 @@ drbbdup_derive_case_bb(void *drcontext, instrlist_t *bb, instr_t **start) {
 
 		instr = instr_get_next(instr);
 	}
-
 	*start = instr;
+
+	/* We also need to include the last instruction in the basic block. */
+	instr_t *last_instr = instrlist_last(bb);
+	if (!drbbdup_is_at_end(last_instr, NULL)) {
+
+		DR_ASSERT(
+				instr_is_syscall(last_instr) || instr_is_cti(last_instr)
+						|| instr_is_ubr(last_instr)
+						|| instr_is_interrupt(last_instr));
+
+		instr_t *instr_cpy = instr_clone(drcontext, last_instr);
+		instrlist_append(case_bb, instr_cpy);
+	}
+
 	return case_bb;
 }
 
@@ -601,16 +612,6 @@ static void drbbdup_handle_pre_analysis(void *drcontext, instrlist_t *bb,
 	 */
 	if (!opts.functions.pre_analyse_bb)
 		return;
-
-	if (instr_get_note(strt) != (void *) DRBBDUP_LABEL_NORMAL) {
-		instr_t * test_instr = strt;
-		while (test_instr) {
-
-			instr_disassemble(drcontext, test_instr, STDERR);
-			dr_fprintf(STDERR, "\n");
-			test_instr = instr_get_next(test_instr);
-		}
-	}
 
 	DR_ASSERT(instr_get_note(strt) == (void * ) DRBBDUP_LABEL_NORMAL);
 	strt = instr_get_next(strt);
@@ -894,7 +895,8 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
 						hit_table_opnd);
 				instrlist_meta_preinsert(bb, where, instr);
 
-				uint hash = drbbdup_get_hitcount_hash((intptr_t) translation_pc);
+				uint hash = drbbdup_get_hitcount_hash(
+						(intptr_t) translation_pc);
 				opnd_t hit_count_opnd = OPND_CREATE_MEM16(DRBBDUP_SCRATCH,
 						hash * sizeof(ushort));
 				opnd = opnd_create_immed_uint(1, OPSZ_2);
@@ -1045,7 +1047,6 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 
 				pt->case_index = 0;
 
-				/* Insert start of chain */
 				drbbdup_insert_chain_end(drcontext, pc, tag, bb, next_instr,
 						manager);
 			} else {
@@ -1080,12 +1081,23 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 
 		} else if (result && label_info == DRBBDUP_LABEL_EXIT) {
 
-			DR_ASSERT(pt->case_index >= 0);
+			DR_ASSERT(pt->case_index == 0);
+
+			instr_t *last = instrlist_last_app(bb);
+			if (instr_is_syscall(last) || instr_is_cti(last)
+					|| instr_is_ubr(last) || instr_is_interrupt(last)) {
+
+				drbbdup_case = &(manager->default_case);
+				analysis_data = pt->instrum_infos[pt->case_index];
+				opts.functions.instrument_bb(drcontext, bb, last, instr,
+						drbbdup_case->condition_val, opts.functions.user_data,
+						pt->pre_analysis_data, analysis_data);
+			}
+
+			drreg_restore_all_now(drcontext, bb, instr);
 
 			/* Set to -1 to always trigger default behaviour. */
 			pt->case_index = -1;
-
-			drreg_restore_all_now(drcontext, bb, instr);
 
 		} else {
 
@@ -1099,6 +1111,20 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 
 				/* Include restoration before jmp instr */
 				if (result && (label_info == DRBBDUP_LABEL_NORMAL)) {
+
+					instr_t *last = instrlist_last_app(bb);
+					if (instr_is_syscall(last) || instr_is_cti(last)
+							|| instr_is_ubr(last) || instr_is_interrupt(last)) {
+
+						drbbdup_case = &(manager->cases[pt->case_index - 1]);
+						DR_ASSERT(drbbdup_case->is_defined);
+						analysis_data = pt->instrum_infos[pt->case_index];
+						opts.functions.instrument_bb(drcontext, bb, last, instr,
+								drbbdup_case->condition_val,
+								opts.functions.user_data, pt->pre_analysis_data,
+								analysis_data);
+					}
+
 					drreg_restore_all_now(drcontext, bb, instr);
 
 					/* Don't bother instrumenting jmp exists of fast paths */
@@ -1111,10 +1137,10 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 
 				if (pt->case_index == -1) {
 
-					drbbdup_case = NULL;
-					analysis_data = NULL;
-					opts.functions.nan_instrument_bb(drcontext, bb, instr,
-							opts.functions.user_data);
+					DR_ASSERT(
+							instr_is_syscall(instr) || instr_is_cti(instr)
+									|| instr_is_ubr(instr)
+									|| instr_is_interrupt(instr));
 				} else {
 
 					if (pt->case_index == 0) {
@@ -1129,7 +1155,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 
 					analysis_data = pt->instrum_infos[pt->case_index];
 
-					opts.functions.instrument_bb(drcontext, bb, instr,
+					opts.functions.instrument_bb(drcontext, bb, instr, instr,
 							drbbdup_case->condition_val,
 							opts.functions.user_data, pt->pre_analysis_data,
 							analysis_data);
@@ -1317,7 +1343,6 @@ static void drbbdup_handle_revert() {
 
 		LOG(drcontext, DR_LOG_ALL, 2, "%s Reverting for basic block %p\n",
 				__FUNCTION__, bb_pc);
-
 
 		uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
 		DR_ASSERT(pt->revert_counts[hash] == 0);
@@ -1653,7 +1678,13 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
 	return DRBBDUP_SUCCESS;
 }
 
-DR_EXPORT bool drbbdup_is_last_instr(instr_t *instr) {
+DR_EXPORT bool drbbdup_is_last_instr(instrlist_t *bb, instr_t *instr) {
+
+	instr_t *last = instrlist_last(bb);
+	if (instr_is_syscall(last) || instr_is_cti(last) || instr_is_ubr(last)
+			|| instr_is_interrupt(last)) {
+		return instr_same(instr, last);
+	}
 
 	while (instr) {
 
