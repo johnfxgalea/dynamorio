@@ -733,8 +733,8 @@ static void drbbdup_insert_landing_restoration(void *drcontext,
 	 * Note that we are unreserving these register ONLY for the
 	 * considered current case.
 	 */
-	drreg_unreserve_aflags(drcontext, bb, where);
 	drreg_unreserve_register(drcontext, bb, where, pt->reg_scratch);
+	drreg_unreserve_aflags(drcontext, bb, where);
 }
 
 static void drbbdup_insert_chain(void *drcontext, drbbdup_per_thread *pt,
@@ -843,6 +843,7 @@ static void drbbdup_insert_chain_end(void *drcontext, drbbdup_per_thread *pt,
 				drbbdup_insert_landing_restoration(drcontext, pt, bb, where);
 
 				drreg_restore_all_now(drcontext, bb, where);
+
 				opnd = opnd_create_pc(fp_new_case_cache_pc);
 				instr = INSTR_CREATE_jmp(drcontext, opnd);
 				instrlist_meta_preinsert(bb, where, instr);

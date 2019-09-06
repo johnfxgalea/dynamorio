@@ -1232,12 +1232,12 @@ drreg_reserve_reg_internal(void *drcontext, instrlist_t *ilist, instr_t *where,
             /* If aflags was unreserved but is still in xax, give it up rather than
              * fail to reserve a new register.
              */
-            if (!pt->aflags.in_use && pt->reg[GPR_IDX(DR_REG_XAX)].in_use &&
+            if (pt->reg[GPR_IDX(DR_REG_XAX)].in_use &&
                 pt->aflags.xchg == DR_REG_XAX &&
                 (reg_allowed == NULL ||
                  drvector_get_entry(reg_allowed, GPR_IDX(DR_REG_XAX)) != NULL)) {
                 LOG(drcontext, DR_LOG_ALL, 3,
-                    "%s @%d." PFX ": taking xax from unreserved aflags\n", __FUNCTION__,
+                    "%s @%d." PFX ": taking xax from  aflags\n", __FUNCTION__,
                     pt->live_idx, get_where_app_pc(where));
                 drreg_move_aflags_from_reg(drcontext, ilist, where, pt, true);
                 reg = DR_REG_XAX;
