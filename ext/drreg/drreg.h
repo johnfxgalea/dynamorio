@@ -50,6 +50,11 @@
 extern "C" {
 #endif
 
+/* This should be pretty hard to exceed as there aren't this many GPRs */
+#define MAX_SPILLS (SPILL_SLOT_MAX + 8)
+/* This should be pretty hard to exceed as there aren't this many XMMs */
+#define MAX_XMM_SPILLS (MCXT_NUM_SIMD_SLOTS + 8)
+
 /**
  * \addtogroup drreg Register Usage Coordinator
  */
@@ -187,6 +192,25 @@ DR_EXPORT
  */
 drreg_status_t
 drreg_init(drreg_options_t *ops);
+
+typedef struct _reg_info_snapshot_t {
+
+	bool in_use;
+	bool ever_spilled;
+	bool native;
+	reg_id_t xchg;
+	int slot;
+} reg_info_snapshot_t;
+
+typedef struct _snapshot_t {
+	reg_info_snapshot_t reg[DR_NUM_GPR_REGS];
+	reg_info_snapshot_t xmm_reg[MCXT_NUM_SIMD_SLOTS];
+	reg_info_snapshot_t aflags;
+	reg_id_t slot_use[MAX_SPILLS];
+	reg_id_t xmm_slot_use[MAX_XMM_SPILLS];
+	int pending_unreserved;
+	int xmm_pending_unreserved;
+} snapshot_t;
 
 DR_EXPORT
 /**
@@ -634,6 +658,19 @@ DR_EXPORT
 drreg_status_t
 drreg_is_instr_spill_or_restore(void *drcontext, instr_t *instr, bool *spill OUT,
                                 bool *restore OUT, reg_id_t *reg_spilled OUT, bool *is_xmm OUT);
+
+
+DR_EXPORT
+/**
+ * Take snapshot. Useful for non-linear spillage
+ */
+drreg_status_t drreg_take_snapshot(void *drcontext, snapshot_t *snapshot);
+
+DR_EXPORT
+/**
+ * APPLY snapshot. Useful for non-linear spillage
+ */
+drreg_status_t drreg_apply_snapshot(void *drcontext, snapshot_t *snapshot);
 
 /*@}*/ /* end doxygen group */
 
