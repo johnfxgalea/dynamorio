@@ -66,6 +66,11 @@
 
 #define PRE instrlist_meta_preinsert
 
+/* This should be pretty hard to exceed as there aren't this many GPRs */
+#define MAX_SPILLS (SPILL_SLOT_MAX + 8)
+
+/* This should be pretty hard to exceed as there aren't this many XMMs */
+#define MAX_XMM_SPILLS (MCXT_NUM_SIMD_SLOTS + 8)
 #define REG_XMM_SIZE 16
 
 #define AFLAGS_SLOT 0 /* always */
@@ -354,98 +359,6 @@ drreg_max_slots_used(OUT uint *max)
 #else
     return DRREG_ERROR_FEATURE_NOT_AVAILABLE;
 #endif
-}
-
-/***************************************************************************
- * Snapshot
- */
-
-static void take_snapshot_reg_info(reg_info_t *reg_info,
-		reg_info_snapshot_t *reg_info_snapshot) {
-
-	reg_info_snapshot->ever_spilled = reg_info->ever_spilled;
-	reg_info_snapshot->in_use = reg_info->in_use;
-	reg_info_snapshot->native = reg_info->native;
-	reg_info_snapshot->slot = reg_info->slot;
-	reg_info_snapshot->xchg = reg_info->xchg;
-}
-
-static void apply_snapshot_reg_info(reg_info_t *reg_info,
-		reg_info_snapshot_t *reg_info_snapshot) {
-
-	 reg_info->ever_spilled = reg_info_snapshot->ever_spilled;
-	 reg_info->in_use = reg_info_snapshot->in_use;
-	 reg_info->native = reg_info_snapshot->native;
-	 reg_info->slot = reg_info_snapshot->slot;
-	 reg_info->xchg = reg_info_snapshot->xchg;
-}
-
-static void take_snapshot(per_thread_t *pt, snapshot_t *snapshot) {
-
-	int i;
-
-	for (i = 0; i < DR_NUM_GPR_REGS; i++) {
-		take_snapshot_reg_info(&(pt->reg[i]), &(snapshot->reg[i]));
-	}
-
-	for (i = 0; i < MCXT_NUM_SIMD_SLOTS; i++) {
-		take_snapshot_reg_info(&(pt->xmm_reg[i]), &(snapshot->xmm_reg[i]));
-	}
-
-	take_snapshot_reg_info(&(pt->aflags), &(snapshot->aflags));
-
-	memcpy(snapshot->slot_use, pt->slot_use, sizeof(reg_id_t) * MAX_SPILLS);
-	memcpy(snapshot->xmm_slot_use, pt->xmm_slot_use, sizeof(reg_id_t) * MAX_SPILLS);
-
-	snapshot->pending_unreserved = pt->pending_unreserved;
-	snapshot->xmm_pending_unreserved = pt->xmm_pending_unreserved;
-}
-
-static void apply_snapshot(snapshot_t *snapshot, per_thread_t *pt) {
-
-	int i;
-
-	for (i = 0; i < DR_NUM_GPR_REGS; i++) {
-		apply_snapshot_reg_info(&(pt->reg[i]), &(snapshot->reg[i]));
-	}
-
-	for (i = 0; i < MCXT_NUM_SIMD_SLOTS; i++) {
-		apply_snapshot_reg_info(&(pt->xmm_reg[i]), &(snapshot->xmm_reg[i]));
-	}
-
-	apply_snapshot_reg_info(&(pt->aflags), &(snapshot->aflags));
-
-	memcpy(pt->slot_use, snapshot->slot_use, sizeof(reg_id_t) * MAX_SPILLS);
-	memcpy(pt->xmm_slot_use, snapshot->xmm_slot_use, sizeof(reg_id_t) * MAX_SPILLS);
-
-	pt->pending_unreserved = snapshot->pending_unreserved;
-	pt->xmm_pending_unreserved = snapshot->xmm_pending_unreserved;
-}
-
-drreg_status_t drreg_take_snapshot(void *drcontext, snapshot_t *snapshot) {
-
-	per_thread_t *pt = get_tls_data(drcontext);
-	take_snapshot(pt, snapshot);
-
-	LOG(drcontext, DR_LOG_ALL, 2,
-		                "%s" PFX ": Taking snapshot\n",
-		                __FUNCTION__);
-
-
-	return DRREG_SUCCESS;
-}
-
-drreg_status_t drreg_apply_snapshot(void *drcontext, snapshot_t *snapshot) {
-
-
-	LOG(drcontext, DR_LOG_ALL, 2,
-	                "%s" PFX ": Applying snapshot\n",
-	                __FUNCTION__);
-
-	per_thread_t *pt = get_tls_data(drcontext);
-	apply_snapshot(snapshot, pt);
-
-	return DRREG_SUCCESS;
 }
 
 /***************************************************************************
@@ -1232,12 +1145,12 @@ drreg_reserve_reg_internal(void *drcontext, instrlist_t *ilist, instr_t *where,
             /* If aflags was unreserved but is still in xax, give it up rather than
              * fail to reserve a new register.
              */
-            if (pt->reg[GPR_IDX(DR_REG_XAX)].in_use &&
+            if (!pt->aflags.in_use && pt->reg[GPR_IDX(DR_REG_XAX)].in_use &&
                 pt->aflags.xchg == DR_REG_XAX &&
                 (reg_allowed == NULL ||
                  drvector_get_entry(reg_allowed, GPR_IDX(DR_REG_XAX)) != NULL)) {
                 LOG(drcontext, DR_LOG_ALL, 3,
-                    "%s @%d." PFX ": taking xax from  aflags\n", __FUNCTION__,
+                    "%s @%d." PFX ": taking xax from unreserved aflags\n", __FUNCTION__,
                     pt->live_idx, get_where_app_pc(where));
                 drreg_move_aflags_from_reg(drcontext, ilist, where, pt, true);
                 reg = DR_REG_XAX;

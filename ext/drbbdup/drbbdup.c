@@ -33,8 +33,12 @@
 
 /* THREAD SLOTS */
 #define DRBBDUP_COMPARATOR_SLOT 0
-#define DRBBDUP_TAG_SLOT 1
-#define DRBBDUP_HIT_TABLE_SLOT 2
+#define DRBBDUP_XAX_REG_SLOT 1
+#define DRBBDUP_FLAG_REG_SLOT 2
+#define DRBBDUP_REVERT_TABLE_SLOT 3
+#define DRBBDUP_HIT_TABLE_SLOT 4
+
+#define DRBBDUP_SCRATCH DR_REG_XAX
 
 // Comment out macro for no stats
 //#define ENABLE_STATS 1
@@ -76,9 +80,8 @@ typedef struct {
 	int case_index;
 	void *pre_analysis_data;
 	void **instrum_infos;
+	uint16_t revert_counts[TABLE_SIZE];
 	uint16_t hit_counts[TABLE_SIZE];
-	snapshot_t spill_snap_shot;
-	reg_id_t reg_scratch;
 
 } drbbdup_per_thread;
 
@@ -103,6 +106,8 @@ static hashtable_t case_manager_table;
 static drbbdup_options_priv_t opts;
 
 static app_pc fp_new_case_cache_pc = NULL;
+static app_pc fp_revert_cache_pc = NULL;
+static app_pc fp_stop_revert_cache_pc = NULL;
 
 static void *rw_lock;
 
@@ -124,6 +129,8 @@ static void drbbdup_stat_inc_instrum_bb();
 static void drbbdup_stat_inc_non_applicable();
 static void drbbdup_stat_no_fp();
 static void drbbdup_stat_inc_gen();
+static void drbbdup_stat_inc_revert();
+static void drbbdup_stat_inc_stop_revert();
 static void drbbdup_stat_inc_bb_size(uint size);
 static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
 		instr_t *where, int case_index);
@@ -149,6 +156,10 @@ static unsigned long no_fp = 0;
 static unsigned long total_exec = 0;
 /** Number of fast paths generated **/
 static unsigned long gen_num = 0;
+/** Number of Reverts **/
+static unsigned long revert_num = 0;
+/** Number of stop-reverts **/
+static unsigned long stop_revert_num = 0;
 
 /** Number of bails to slow path**/
 static unsigned long total_bails = 0;
@@ -168,7 +179,6 @@ file_t time_file;
 /**************************************************************
  * Helpers
  */
-
 static opnd_t drbbdup_get_tls_raw_slot_opnd(int slot_idx) {
 
 	return opnd_create_far_base_disp_ex(tls_raw_reg, REG_NULL, REG_NULL, 1,
@@ -176,36 +186,69 @@ static opnd_t drbbdup_get_tls_raw_slot_opnd(int slot_idx) {
 			OPSZ_PTR, false, true, false);
 }
 
-static void *drbbdup_get_tls_raw_slot_value(int slot_idx) {
+DR_EXPORT bool drbbdup_is_reverted(app_pc pc) {
 
-	byte *addr = dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
-			+ (slot_idx * (sizeof(void *)));
-	void **analysis_switch_addr = (void **) addr;
-	return *analysis_switch_addr;
+	bool is_reverted = false;
+
+	/* Fetch new case manager */
+	dr_rwlock_read_lock(rw_lock);
+	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+			&case_manager_table, pc);
+	if (manager)
+		is_reverted = manager->manager_opts.is_reverted;
+	dr_rwlock_read_unlock(rw_lock);
+
+	return is_reverted;
 }
 
-static void drbbdup_set_tls_raw_slot_value(int slot_idx, void *value) {
-
-	byte *addr = dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
-			+ (slot_idx * (sizeof(void *)));
-	void **analysis_switch_addr = (void **) addr;
-	*analysis_switch_addr = value;
-}
-
-void *
+/**
+ * Returns the value of the comparator.
+ */
+DR_EXPORT void *
 drbbdup_get_comparator() {
 
-	return drbbdup_get_tls_raw_slot_value(DRBBDUP_COMPARATOR_SLOT);
+	byte *addr = dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base;
+	void **comparator_addr = (void **) addr;
+	return *comparator_addr;
 }
 
-void drbbdup_set_comparator(void *comparator_val) {
+static reg_t drbbdup_get_spilled(int slot_idx) {
 
-	drbbdup_set_tls_raw_slot_value(DRBBDUP_COMPARATOR_SLOT, comparator_val);
+	byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
+			+ (slot_idx * (sizeof(void *))));
+
+	void **value = (void **) addr;
+	return (reg_t) *value;
 }
 
-opnd_t drbbdup_get_comparator_opnd() {
+DR_EXPORT void drbbdup_set_comparator(void *comparator_val) {
+
+	byte *addr = dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base;
+	void **comparator_addr = (void **) addr;
+	*comparator_addr = comparator_val;
+}
+
+DR_EXPORT opnd_t drbbdup_get_comparator_opnd() {
 
 	return drbbdup_get_tls_raw_slot_opnd(DRBBDUP_COMPARATOR_SLOT);
+}
+
+static void drbbdup_spill_register(void *drcontext, instrlist_t *ilist,
+		instr_t *where, int slot_idx, reg_id_t reg_id) {
+
+	opnd_t slot_opnd = drbbdup_get_tls_raw_slot_opnd(slot_idx);
+	instr_t *instr = INSTR_CREATE_mov_st(drcontext, slot_opnd,
+			opnd_create_reg(reg_id));
+	instrlist_meta_preinsert(ilist, where, instr);
+}
+
+static void drbbdup_restore_register(void *drcontext, instrlist_t *ilist,
+		instr_t *where, int slot_idx, reg_id_t reg_id) {
+
+	opnd_t slot_opnd = drbbdup_get_tls_raw_slot_opnd(slot_idx);
+	instr_t *instr = INSTR_CREATE_mov_ld(drcontext, opnd_create_reg(reg_id),
+			slot_opnd);
+	instrlist_meta_preinsert(ilist, where, instr);
 }
 
 /************************************************************************
@@ -444,6 +487,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 		label = INSTR_CREATE_label(drcontext);
 		instr_set_note(label, (void *) (intptr_t) DRBBDUP_LABEL_NORMAL);
 		instrlist_meta_preinsert(bb, instrlist_first(bb), label);
+
 	}
 
 	/* Delete original. We are done from duplication. */
@@ -459,6 +503,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 		instrlist_meta_preinsert(bb, last, exit_label);
 	} else {
+
 		/**
 		 * Restoration at the end of the block is not done automatically
 		 * by drreg but by drbbdup! This is because different cases could
@@ -662,6 +707,20 @@ static dr_emit_flags_t drbbdup_analyse_phase(void *drcontext, void *tag,
  * based on the case being handled.
  */
 
+static void drbbdup_insert_landing_restoration(void *drcontext, instrlist_t *bb,
+		instr_t *where, const drbbdup_manager_t *manager) {
+
+	/** When control reached a bb, we need to restore from the JMP **/
+	if (!manager->is_eflag_dead) {
+
+		drbbdup_restore_register(drcontext, bb, where, 2, DRBBDUP_SCRATCH);
+		dr_restore_arith_flags_from_xax(drcontext, bb, where);
+	}
+
+	if (!manager->is_xax_dead)
+		drbbdup_restore_register(drcontext, bb, where, 1, DRBBDUP_SCRATCH);
+}
+
 static uint drbbdup_get_hitcount_hash(intptr_t bb_id) {
 
 	uint hash = ((uint) bb_id) << 1;
@@ -698,72 +757,98 @@ static void drbbdup_insert_encoding(void *drcontext, drbbdup_per_thread *pt,
 	drbbdup_stat_clean_bb_exec(drcontext, bb, where);
 #endif
 
+	/* Spill register. */
+	if (drreg_are_aflags_dead(drcontext, where, &(manager->is_eflag_dead))
+			!= DRREG_SUCCESS)
+		DR_ASSERT(false);
+
+	if (drreg_is_register_dead(drcontext, DRBBDUP_SCRATCH, where,
+			&(manager->is_xax_dead)) != DRREG_SUCCESS)
+		DR_ASSERT(false);
+
+	if (!manager->is_xax_dead)
+		drbbdup_spill_register(drcontext, bb, where, 1, DRBBDUP_SCRATCH);
+
+	if (!manager->is_eflag_dead) {
+		dr_save_arith_flags_to_xax(drcontext, bb, where);
+		drbbdup_spill_register(drcontext, bb, where, 2, DRBBDUP_SCRATCH);
+		if (!manager->is_xax_dead)
+			drbbdup_restore_register(drcontext, bb, where, 1, DRBBDUP_SCRATCH);
+	}
+
 	/* Call user function to get comparison */
 	opts.functions.get_comparator(drcontext, bb, where,
 			opts.functions.user_data, pt->pre_analysis_data);
 
-	/* Reserve registers for the cmp chain */
-	if (drreg_reserve_aflags(drcontext, bb, where)
-			|| drreg_reserve_register(drcontext, bb, where, NULL,
-					&(pt->reg_scratch)) != DRREG_SUCCESS)
-		DR_ASSERT(false);
+	/* Restore unreserved registers */
+	drreg_restore_all_now(drcontext, bb, where);
 
-	/* Create a drreg snapshot, because we will apply it upon entering cases */
-	drreg_take_snapshot(drcontext, &(pt->spill_snap_shot));
+	opnd_t scratch_reg_opnd = opnd_create_reg(DRBBDUP_SCRATCH);
+
+//	if (manager->manager_opts.enable_revert_check) {
+//
+//		DR_ASSERT(!manager->manager_opts.is_reverted);
+//
+//		opnd_t revert_table_opnd = drbbdup_get_tls_raw_slot_opnd(
+//		DRBBDUP_REVERT_TABLE_SLOT);
+//
+//		instr = INSTR_CREATE_mov_ld(drcontext, scratch_reg_opnd,
+//				revert_table_opnd);
+//		instrlist_meta_preinsert(bb, where, instr);
+//
+//		uint hash = drbbdup_get_hitcount_hash((intptr_t) translation_pc);
+//		opnd_t revert_count_opnd = OPND_CREATE_MEM16(DRBBDUP_SCRATCH,
+//				hash * sizeof(ushort));
+//		opnd = opnd_create_immed_uint(1, OPSZ_2);
+//		instr = INSTR_CREATE_add(drcontext, revert_count_opnd, opnd);
+//		instrlist_meta_preinsert(bb, where, instr);
+//
+//		instr = INSTR_CREATE_mov_imm(drcontext, scratch_reg_opnd,
+//				opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
+//		instrlist_meta_preinsert(bb, where, instr);
+//
+//		instr = INSTR_CREATE_jcc(drcontext, OP_jo,
+//				opnd_create_pc(fp_stop_revert_cache_pc));
+//		instrlist_meta_preinsert(bb, where, instr);
+//	}
 
 	/**
 	 * Load the comparator value to register.
 	 * We could compare directly via addressable mem ref, but this will
-	 * destroy micro-fusing (mem and immed)
+	 * destroy micro-fusing (mem and immed) !
 	 */
-	opnd_t scratch_reg_opnd = opnd_create_reg(pt->reg_scratch);
 	opnd = drbbdup_get_comparator_opnd();
 	instr = INSTR_CREATE_mov_ld(drcontext, scratch_reg_opnd, opnd);
 	instrlist_meta_preinsert(bb, where, instr);
 }
 
-static void drbbdup_insert_landing_restoration(void *drcontext,
-		drbbdup_per_thread *pt, instrlist_t *bb, instr_t *where) {
-
-	/* Set the state of drreg as if we jumped directly to this case. */
-	drreg_apply_snapshot(drcontext, &(pt->spill_snap_shot));
-
-	/**
-	 * We need to unreserve the registers used by the chain here.
-	 * Note that we are unreserving these register ONLY for the
-	 * considered current case.
-	 */
-	drreg_unreserve_register(drcontext, bb, where, pt->reg_scratch);
-	drreg_unreserve_aflags(drcontext, bb, where);
-}
-
-static void drbbdup_insert_chain(void *drcontext, drbbdup_per_thread *pt,
-		instrlist_t *bb, instr_t *where, drbbdup_manager_t *manager,
-		instr_t *next_label, drbbdup_case_t *current_case) {
+static void drbbdup_insert_chain(void *drcontext, instrlist_t *bb,
+		instr_t *where, drbbdup_manager_t *manager, instr_t *next_label,
+		drbbdup_case_t *current_case) {
 
 	instr_t *instr;
 	opnd_t opnd;
 
 	opnd = opnd_create_immed_uint((uintptr_t) current_case->condition_val,
 			opnd_size_from_bytes(sizeof(current_case->condition_val)));
-	instr = INSTR_CREATE_cmp(drcontext, opnd_create_reg(pt->reg_scratch), opnd);
+	instr = INSTR_CREATE_cmp(drcontext, opnd_create_reg(DRBBDUP_SCRATCH), opnd);
 	instrlist_meta_preinsert(bb, where, instr);
 
 	instr = INSTR_CREATE_jcc(drcontext, OP_jnz, opnd_create_instr(next_label));
 	instrlist_meta_preinsert(bb, where, instr);
 
-	drbbdup_insert_landing_restoration(drcontext, pt, bb, where);
+	drbbdup_insert_landing_restoration(drcontext, bb, where, manager);
 }
 
-static void drbbdup_insert_chain_end(void *drcontext, drbbdup_per_thread *pt,
-		app_pc translation_pc, void *tag, instrlist_t *bb, instr_t *where,
-		drbbdup_manager_t *manager) {
+static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
+		void *tag, instrlist_t *bb, instr_t *where, drbbdup_manager_t *manager) {
 
 	instr_t *instr;
 	opnd_t opnd;
 
 	instr_t *done_label = INSTR_CREATE_label(drcontext);
-	opnd_t mask_opnd = opnd_create_reg(pt->reg_scratch);
+	instr_t *revert_label = INSTR_CREATE_label(drcontext);
+	opnd_t mask_opnd = opnd_create_reg(DRBBDUP_SCRATCH);
 
 	if (manager->manager_opts.enable_dynamic_fp) {
 		if (include_path_gen(manager)) {
@@ -780,7 +865,7 @@ static void drbbdup_insert_chain_end(void *drcontext, drbbdup_per_thread *pt,
 			instrlist_meta_preinsert(bb, where, instr);
 
 			instr = INSTR_CREATE_jcc(drcontext, OP_jz,
-					opnd_create_instr(done_label));
+					opnd_create_instr(revert_label));
 			instrlist_meta_preinsert(bb, where, instr);
 
 			if (manager->manager_opts.enable_pop_threshold) {
@@ -795,7 +880,7 @@ static void drbbdup_insert_chain_end(void *drcontext, drbbdup_per_thread *pt,
 				instrlist_meta_preinsert(bb, where, instr);
 
 				instr = INSTR_CREATE_jcc(drcontext, OP_jg,
-						opnd_create_instr(done_label));
+						opnd_create_instr(revert_label));
 				instrlist_meta_preinsert(bb, where, instr);
 			}
 
@@ -812,7 +897,7 @@ static void drbbdup_insert_chain_end(void *drcontext, drbbdup_per_thread *pt,
 
 				uint hash = drbbdup_get_hitcount_hash(
 						(intptr_t) translation_pc);
-				opnd_t hit_count_opnd = OPND_CREATE_MEM16(pt->reg_scratch,
+				opnd_t hit_count_opnd = OPND_CREATE_MEM16(DRBBDUP_SCRATCH,
 						hash * sizeof(ushort));
 				opnd = opnd_create_immed_uint(1, OPSZ_2);
 				instr = INSTR_CREATE_sub(drcontext, hit_count_opnd, opnd);
@@ -835,14 +920,9 @@ static void drbbdup_insert_chain_end(void *drcontext, drbbdup_per_thread *pt,
 			} else {
 
 				/* Insert new case handling here */
-				instr = INSTR_CREATE_mov_imm(drcontext,
-						drbbdup_get_tls_raw_slot_opnd(DRBBDUP_TAG_SLOT),
+				instr = INSTR_CREATE_mov_imm(drcontext, mask_opnd,
 						opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
 				instrlist_meta_preinsert(bb, where, instr);
-
-				drbbdup_insert_landing_restoration(drcontext, pt, bb, where);
-
-				drreg_restore_all_now(drcontext, bb, where);
 
 				opnd = opnd_create_pc(fp_new_case_cache_pc);
 				instr = INSTR_CREATE_jmp(drcontext, opnd);
@@ -858,13 +938,41 @@ static void drbbdup_insert_chain_end(void *drcontext, drbbdup_per_thread *pt,
 #endif
 	}
 
+	instrlist_meta_preinsert(bb, where, revert_label);
+
+	if (manager->manager_opts.enable_revert_check) {
+
+		DR_ASSERT(!manager->manager_opts.is_reverted);
+
+		opnd_t revert_table_opnd = drbbdup_get_tls_raw_slot_opnd(
+		DRBBDUP_REVERT_TABLE_SLOT);
+
+		instr = INSTR_CREATE_mov_ld(drcontext, mask_opnd, revert_table_opnd);
+		instrlist_meta_preinsert(bb, where, instr);
+
+		uint hash = drbbdup_get_hitcount_hash((intptr_t) translation_pc);
+		opnd_t revert_count_opnd = OPND_CREATE_MEM16(DR_REG_XAX,
+				hash * sizeof(ushort));
+		opnd = opnd_create_immed_uint(2, OPSZ_2);
+		instr = INSTR_CREATE_sub(drcontext, revert_count_opnd, opnd);
+		instrlist_meta_preinsert(bb, where, instr);
+
+		/* If counter is reached threshold, jmp to revert.
+		 * We have been taking the slow path for far too long!
+		 */
+		instr = INSTR_CREATE_mov_imm(drcontext, mask_opnd,
+				opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
+		instrlist_meta_preinsert(bb, where, instr);
+
+		instr = INSTR_CREATE_jcc(drcontext, OP_jz,
+				opnd_create_pc(fp_revert_cache_pc));
+		instrlist_meta_preinsert(bb, where, instr);
+	}
+
 	instrlist_meta_preinsert(bb, where, done_label);
 
-	drbbdup_insert_landing_restoration(drcontext, pt, bb, where);
-}
+	drbbdup_insert_landing_restoration(drcontext, bb, where, manager);
 
-bool drbbdup_is_reverted(app_pc pc) {
-	return false;
 }
 
 static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
@@ -916,7 +1024,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 		DR_ASSERT(next_label);
 		DR_ASSERT(label_info == DRBBDUP_LABEL_NORMAL);
 
-		drbbdup_insert_chain(drcontext, pt, bb, next_instr, manager, next_label,
+		drbbdup_insert_chain(drcontext, bb, next_instr, manager, next_label,
 				drbbdup_case);
 
 #ifdef ENABLE_STATS
@@ -939,7 +1047,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 
 				pt->case_index = 0;
 
-				drbbdup_insert_chain_end(drcontext, pt, pc, tag, bb, next_instr,
+				drbbdup_insert_chain_end(drcontext, pc, tag, bb, next_instr,
 						manager);
 			} else {
 
@@ -962,7 +1070,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 				pt->case_index = i;
 
 				/* Insert start of chain */
-				drbbdup_insert_chain(drcontext, pt, bb, next_instr, manager,
+				drbbdup_insert_chain(drcontext, bb, next_instr, manager,
 						next_label, drbbdup_case);
 			}
 
@@ -1089,6 +1197,29 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
  * New Case HANDING
  */
 
+static void drbbdup_prepare_redirect(dr_mcontext_t *mcontext,
+		drbbdup_manager_t *manager, app_pc bb_pc) {
+
+	if (!manager->is_eflag_dead) {
+		// Eflag restoration is taken from drreg. Should move it upon release.
+		reg_t newval = mcontext->xflags;
+		reg_t val;
+		uint sahf;
+		val = drbbdup_get_spilled(DRBBDUP_FLAG_REG_SLOT);
+		sahf = (val & 0xff00) >> 8;
+		newval &= ~(EFLAGS_ARITH);
+		newval |= sahf;
+		if (TEST(1, val)) /* seto */
+			newval |= EFLAGS_OF;
+		mcontext->xflags = newval;
+	}
+	if (!manager->is_xax_dead)
+		reg_set_value(DRBBDUP_SCRATCH, mcontext,
+				drbbdup_get_spilled(DRBBDUP_XAX_REG_SLOT));
+	mcontext->pc = bb_pc;
+
+}
+
 static void drbbdup_handle_new_case() {
 
 #ifdef ENABLE_STATS
@@ -1101,7 +1232,7 @@ static void drbbdup_handle_new_case() {
 	dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_ALL, };
 	dr_get_mcontext(drcontext, &mcontext);
 
-	void *tag = (void *) drbbdup_get_tls_raw_slot_value(DRBBDUP_TAG_SLOT);
+	void *tag = (void *) reg_get_value(DRBBDUP_SCRATCH, &mcontext);
 
 	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
 	instr_t *instr = instrlist_first_app(ilist);
@@ -1122,6 +1253,8 @@ static void drbbdup_handle_new_case() {
 
 	/* Find an undefined case, and set it up for the new conditional. */
 
+	/* Check whether the default case is actually the missing case. */
+
 	int i;
 	for (i = 0; i < opts.fp_settings.dup_limit; i++) {
 
@@ -1135,7 +1268,8 @@ static void drbbdup_handle_new_case() {
 	}
 
 	manager->manager_opts.enable_revert_check = false;
-	mcontext.pc = bb_pc;
+
+	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
 
 	dr_rwlock_write_unlock(rw_lock);
 
@@ -1158,6 +1292,124 @@ static void drbbdup_handle_new_case() {
 	dr_redirect_execution(&mcontext);
 }
 
+static void drbbdup_handle_revert() {
+
+#ifdef ENABLE_STATS
+	drbbdup_stat_inc_revert();
+#endif
+
+	void *drcontext = dr_get_current_drcontext();
+
+	/* Must use DR_MC_ALL due to dr_redirect_execution */
+	dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_ALL, };
+	dr_get_mcontext(drcontext, &mcontext);
+
+	void *tag = (void *) reg_get_value(DRBBDUP_SCRATCH, &mcontext);
+	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
+	instr_t *instr = instrlist_first_app(ilist);
+	app_pc bb_pc = instr_get_app_pc(instr);
+	instrlist_clear_and_destroy(drcontext, ilist);
+
+	bool already_reverted = false;
+
+	/* Look up case manager */
+	dr_rwlock_write_lock(rw_lock);
+
+	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+			&case_manager_table, bb_pc);
+
+	if (!manager)
+		DR_ASSERT_MSG(false, "Can't find manager!\n");
+
+	already_reverted = !manager->manager_opts.enable_revert_check;
+
+	if (!already_reverted) {
+		DR_ASSERT(!manager->manager_opts.is_reverted);
+		DR_ASSERT(manager->manager_opts.enable_revert_check);
+		manager->manager_opts.is_reverted = true;
+		manager->manager_opts.enable_revert_check = false;
+
+	} else {
+		DR_ASSERT(!manager->manager_opts.enable_revert_check);
+	}
+
+	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
+
+	dr_rwlock_write_unlock(rw_lock);
+
+	if (!already_reverted) {
+		drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
+				drcontext, tls_idx);
+
+		LOG(drcontext, DR_LOG_ALL, 2, "%s Reverting for basic block %p\n",
+				__FUNCTION__, bb_pc);
+
+		uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
+		DR_ASSERT(pt->revert_counts[hash] == 0);
+		pt->revert_counts[hash] = opts.fp_settings.revert_threshold;
+
+		bool succ = dr_delete_shared_fragment(tag);
+		DR_ASSERT(succ);
+	}
+
+	dr_redirect_execution(&mcontext);
+}
+
+static void drbbdup_handle_stop_revert() {
+
+#ifdef ENABLE_STATS
+	drbbdup_stat_inc_stop_revert();
+#endif
+
+	void *drcontext = dr_get_current_drcontext();
+
+	/* Must use DR_MC_ALL due to dr_redirect_execution */
+	dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_ALL, };
+	dr_get_mcontext(drcontext, &mcontext);
+
+	void *tag = (void *) reg_get_value(DRBBDUP_SCRATCH, &mcontext);
+
+	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
+	instr_t *instr = instrlist_first_app(ilist);
+	app_pc bb_pc = instr_get_app_pc(instr);
+	instrlist_clear_and_destroy(drcontext, ilist);
+
+	bool already_reverted = false;
+
+	/* Look up case manager */
+	dr_rwlock_write_lock(rw_lock);
+
+	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+			&case_manager_table, bb_pc);
+
+	if (!manager)
+		DR_ASSERT_MSG(false, "Can't find manager!\n");
+
+	already_reverted = !manager->manager_opts.enable_revert_check;
+
+	if (!already_reverted) {
+		DR_ASSERT(manager->manager_opts.enable_revert_check);
+		manager->manager_opts.enable_revert_check = false;
+	}
+
+	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
+
+	dr_rwlock_write_unlock(rw_lock);
+
+	if (!already_reverted) {
+		drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
+				drcontext, tls_idx);
+
+		uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
+		pt->revert_counts[hash] = opts.fp_settings.revert_threshold;
+
+		bool succ = dr_delete_shared_fragment(tag);
+		DR_ASSERT(succ);
+	}
+
+	dr_redirect_execution(&mcontext);
+}
+
 static app_pc init_fp_cache(void (*clean_call_func)()) {
 
 	app_pc cache_pc;
@@ -1173,7 +1425,7 @@ static app_pc init_fp_cache(void (*clean_call_func)()) {
 
 	size = dr_page_size();
 
-	/**
+	/*
 	 *  Allocate code cache, and set Read-Write-Execute permissions.
 	 *  The dr_nonheap_alloc function allows you to set permissions.
 	 */
@@ -1185,10 +1437,8 @@ static app_pc init_fp_cache(void (*clean_call_func)()) {
 
 	DR_ASSERT(end - cache_pc <= (int ) size);
 
-	/**
-	 * Change the permission Read-Write-Execute permissions.
-	 * In particular, we do not need to write the the private cache
-	 */
+// Change the permission Read-Write-Execute permissions.
+// In particular, we do not need to write the the private cache
 	dr_memory_protect(cache_pc, size, DR_MEMPROT_READ | DR_MEMPROT_EXEC);
 
 	return cache_pc;
@@ -1198,6 +1448,41 @@ static void destroy_fp_cache(app_pc cache_pc) {
 
 	dr_nonheap_free(cache_pc, dr_page_size());
 }
+
+///******************************************************************
+// * Frag Deletion
+// */
+//
+//static void deleted_frag(void *drcontext, void *tag) {
+//
+//    if (drcontext == NULL)
+//        return;
+//
+//    drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
+//            drcontext, tls_idx);
+//
+//    app_pc bb_pc = dr_fragment_app_pc(tag);
+//
+//    drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+//            &(pt->case_manager_table), bb_pc);
+//
+//    if (manager) {
+//
+//        dr_fprintf(STDERR, "Found in removal %p\n", bb_pc);
+//
+////
+////        DR_ASSERT(manager->ref_counter > 0);
+////        manager->ref_counter--;
+////
+////        if (manager->ref_counter <= 0) {
+////            dr_fprintf(STDERR, "Removing %p %d\n", bb_pc, manager->fp_flag);
+////
+////            bool is_removed = hashtable_remove(&(pt->case_manager_table),
+////                    bb_pc);
+////            DR_ASSERT(is_removed);
+////        }
+//    }
+//}
 
 /************************************************************************
  * INIT
@@ -1265,10 +1550,19 @@ static void drbbdup_thread_init(void *drcontext) {
 		pt->hit_counts[i] = opts.fp_settings.hit_threshold;
 	}
 
+	for (int i = 0; i < TABLE_SIZE; i++) {
+		pt->revert_counts[i] = opts.fp_settings.revert_threshold;
+	}
+
 	byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
 			+ (DRBBDUP_HIT_TABLE_SLOT * (sizeof(void *))));
 	void **addr_hitcount = (void **) addr;
 	*addr_hitcount = pt->hit_counts;
+
+	addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
+			+ (DRBBDUP_REVERT_TABLE_SLOT * (sizeof(void *))));
+	void **addr_revertcount = (void **) addr;
+	*addr_revertcount = pt->revert_counts;
 
 	drmgr_set_tls_field(drcontext, tls_idx, (void *) pt);
 }
@@ -1349,9 +1643,11 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
 		if (tls_idx == -1)
 			return DRBBDUP_ERROR;
 
-		dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 3, 0);
+		dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 6, 0);
 
 		fp_new_case_cache_pc = init_fp_cache(drbbdup_handle_new_case);
+		fp_revert_cache_pc = init_fp_cache(drbbdup_handle_revert);
+		fp_stop_revert_cache_pc = init_fp_cache(drbbdup_handle_stop_revert);
 
 		/**
 		 * We initialise the hash table that keeps track of defined cases per
@@ -1432,6 +1728,10 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 
 		DR_ASSERT(fp_new_case_cache_pc);
 		destroy_fp_cache(fp_new_case_cache_pc);
+		DR_ASSERT(fp_revert_cache_pc);
+		destroy_fp_cache(fp_revert_cache_pc);
+		DR_ASSERT(fp_stop_revert_cache_pc);
+		destroy_fp_cache(fp_stop_revert_cache_pc);
 
 		drmgr_unregister_bb_app2app_event(drbbdup_duplicate_phase);
 
@@ -1442,7 +1742,7 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 				|| !drmgr_unregister_thread_exit_event(drbbdup_thread_exit))
 			return DRBBDUP_ERROR;
 
-		dr_raw_tls_cfree(tls_raw_base, 3);
+		dr_raw_tls_cfree(tls_raw_base, 6);
 		drmgr_unregister_tls_field(tls_idx);
 //        dr_unregister_delete_event(deleted_frag);
 		drreg_exit();
@@ -1509,6 +1809,20 @@ static void drbbdup_stat_inc_gen() {
 
 	dr_mutex_lock(stat_mutex);
 	gen_num++;
+	dr_mutex_unlock(stat_mutex);
+}
+
+static void drbbdup_stat_inc_revert() {
+
+	dr_mutex_lock(stat_mutex);
+	revert_num++;
+	dr_mutex_unlock(stat_mutex);
+}
+
+static void drbbdup_stat_inc_stop_revert() {
+
+	dr_mutex_lock(stat_mutex);
+	stop_revert_num++;
 	dr_mutex_unlock(stat_mutex);
 }
 
