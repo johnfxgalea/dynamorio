@@ -304,7 +304,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
 	if (!for_trace)
-	drbbdup_stat_inc_bb();
+		drbbdup_stat_inc_bb();
 #endif
 
 	/* Fetch new case manager */
@@ -454,7 +454,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
 	if (!manager->manager_opts.enable_dynamic_fp)
-	drbbdup_stat_no_fp();
+		drbbdup_stat_no_fp();
 #endif
 
 	/**
@@ -896,7 +896,6 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
 				instr = INSTR_CREATE_jmp(drcontext,
 						opnd_create_instr(done_label));
 				instrlist_meta_preinsert(bb, where, instr);
-
 
 				instrlist_meta_preinsert(bb, where, popcnt_label);
 
@@ -1832,7 +1831,7 @@ static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
 		instr_t *where, int case_index) {
 
 	dr_insert_clean_call(drcontext, bb, where, clean_call_case_entry, false, 1,
-			OPND_CREATE_INTPTR(case_index));
+	OPND_CREATE_INTPTR(case_index));
 }
 
 static void clean_call_bail_entry() {
@@ -1858,7 +1857,8 @@ static void clean_call_popcnt_entry() {
 static void drbbdup_stat_popcnt_entry(void *drcontext, instrlist_t *bb,
 		instr_t *where) {
 
-	dr_insert_clean_call(drcontext, bb, where, clean_call_popcnt_entry, false, 0);
+	dr_insert_clean_call(drcontext, bb, where, clean_call_popcnt_entry, false,
+			0);
 }
 
 static void clean_call_bb_execc() {
@@ -1876,29 +1876,31 @@ static void drbbdup_stat_clean_bb_exec(void *drcontext, instrlist_t *bb,
 
 static void drbbdup_stat_print_stats() {
 
-	dr_fprintf(STDERR, "---------------------------\n");
+	dr_fprintf(time_file, "---------------------------\n");
 
-	dr_fprintf(STDERR, "Total BB: %lu\n", total_bb);
-	dr_fprintf(STDERR, "Total Skipped: %lu\n", non_applicable);
-	dr_fprintf(STDERR, "Total BB with no Dynamic FP: %lu\n", no_fp);
-	dr_fprintf(STDERR, "Number of BB instrumented: %lu\n", bb_instrumented);
+	dr_fprintf(time_file, "Total BB: %lu\n", total_bb);
+	dr_fprintf(time_file, "Total Skipped: %lu\n", non_applicable);
+	dr_fprintf(time_file, "Total BB with no Dynamic FP: %lu\n", no_fp);
+	dr_fprintf(time_file, "Number of BB instrumented: %lu\n", bb_instrumented);
 
 	if (bb_instrumented != 0)
-	dr_fprintf(STDERR, "Avg BB size: %lu\n\n",
-			total_size / bb_instrumented);
+		dr_fprintf(time_file, "Avg BB size: %lu\n\n",
+				total_size / bb_instrumented);
 
-	dr_fprintf(STDERR, "Number of fast paths generated (bb): %lu\n", gen_num);
-	dr_fprintf(STDERR, "Number of reverts (bb): %lu\n", revert_num);
-	dr_fprintf(STDERR, "Number of stop-reverts (bb): %lu\n", stop_revert_num);
+	dr_fprintf(time_file, "Number of fast paths generated (bb): %lu\n",
+			gen_num);
+	dr_fprintf(time_file, "Number of reverts (bb): %lu\n", revert_num);
+	dr_fprintf(time_file, "Number of stop-reverts (bb): %lu\n",
+			stop_revert_num);
 
-	dr_fprintf(STDERR, "Total bb exec: %lu\n", total_exec);
-	dr_fprintf(STDERR, "Total bails: %lu\n", total_bails);
-	dr_fprintf(STDERR, "Total failed popcnt: %lu\n", total_popcnt);
+	dr_fprintf(time_file, "Total bb exec: %lu\n", total_exec);
+	dr_fprintf(time_file, "Total bails: %lu\n", total_bails);
+	dr_fprintf(time_file, "Total failed popcnt: %lu\n", total_popcnt);
 
 	for (int i = 0; i < opts.fp_settings.dup_limit + 1; i++)
-	dr_fprintf(STDERR, "Case %d: %lu\n", i, case_num[i]);
+		dr_fprintf(time_file, "Case %d: %lu\n", i, case_num[i]);
 
-	dr_fprintf(STDERR, "---------------------------\n");
+	dr_fprintf(time_file, "---------------------------\n");
 
 }
 
@@ -1910,14 +1912,14 @@ void record_sample(void *drcontext, dr_mcontext_t *mcontext) {
 
 	unsigned long new_fp_taint_num = 0;
 	for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
-	new_fp_taint_num += case_num[i];
+		new_fp_taint_num += case_num[i];
 
 	new_fp_taint_num = new_fp_taint_num - prev_full_taint_num;
 	unsigned long new_fp_gen = gen_num - prev_fp_gen;
 
 	prev_full_taint_num = 0;
 	for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
-	prev_full_taint_num += case_num[i];
+		prev_full_taint_num += case_num[i];
 
 	prev_fp_gen = gen_num;
 
