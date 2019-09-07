@@ -911,11 +911,6 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
 				instr = INSTR_CREATE_jcc(drcontext, OP_jz, opnd);
 				instrlist_meta_preinsert(bb, where, instr);
 
-				/* If counter has NOT reached threshold, jmp to default */
-				opnd = opnd_create_instr(done_label);
-				instr = INSTR_CREATE_jmp_short(drcontext, opnd);
-				instrlist_meta_preinsert(bb, where, instr);
-
 			} else {
 
 				/* Insert new case handling here */
