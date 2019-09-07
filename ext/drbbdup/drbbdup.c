@@ -847,7 +847,6 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
 	opnd_t opnd;
 
 	instr_t *done_label = INSTR_CREATE_label(drcontext);
-	instr_t *revert_label = INSTR_CREATE_label(drcontext);
 	opnd_t mask_opnd = opnd_create_reg(DRBBDUP_SCRATCH);
 
 	if (manager->manager_opts.enable_dynamic_fp) {
@@ -865,7 +864,7 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
 			instrlist_meta_preinsert(bb, where, instr);
 
 			instr = INSTR_CREATE_jcc(drcontext, OP_jz,
-					opnd_create_instr(revert_label));
+					opnd_create_instr(done_label));
 			instrlist_meta_preinsert(bb, where, instr);
 
 			if (manager->manager_opts.enable_pop_threshold) {
@@ -880,7 +879,7 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
 				instrlist_meta_preinsert(bb, where, instr);
 
 				instr = INSTR_CREATE_jcc(drcontext, OP_jg,
-						opnd_create_instr(revert_label));
+						opnd_create_instr(done_label));
 				instrlist_meta_preinsert(bb, where, instr);
 			}
 
@@ -936,37 +935,6 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
 			drbbdup_stat_clean_bail_entry(drcontext, bb, where);
 		}
 #endif
-	}
-
-	instrlist_meta_preinsert(bb, where, revert_label);
-
-	if (manager->manager_opts.enable_revert_check) {
-
-		DR_ASSERT(!manager->manager_opts.is_reverted);
-
-		opnd_t revert_table_opnd = drbbdup_get_tls_raw_slot_opnd(
-		DRBBDUP_REVERT_TABLE_SLOT);
-
-		instr = INSTR_CREATE_mov_ld(drcontext, mask_opnd, revert_table_opnd);
-		instrlist_meta_preinsert(bb, where, instr);
-
-		uint hash = drbbdup_get_hitcount_hash((intptr_t) translation_pc);
-		opnd_t revert_count_opnd = OPND_CREATE_MEM16(DR_REG_XAX,
-				hash * sizeof(ushort));
-		opnd = opnd_create_immed_uint(2, OPSZ_2);
-		instr = INSTR_CREATE_sub(drcontext, revert_count_opnd, opnd);
-		instrlist_meta_preinsert(bb, where, instr);
-
-		/* If counter is reached threshold, jmp to revert.
-		 * We have been taking the slow path for far too long!
-		 */
-		instr = INSTR_CREATE_mov_imm(drcontext, mask_opnd,
-				opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
-		instrlist_meta_preinsert(bb, where, instr);
-
-		instr = INSTR_CREATE_jcc(drcontext, OP_jz,
-				opnd_create_pc(fp_revert_cache_pc));
-		instrlist_meta_preinsert(bb, where, instr);
 	}
 
 	instrlist_meta_preinsert(bb, where, done_label);
