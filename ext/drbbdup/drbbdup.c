@@ -35,7 +35,7 @@
 #define DRBBDUP_COMPARATOR_SLOT 0
 #define DRBBDUP_XAX_REG_SLOT 1
 #define DRBBDUP_FLAG_REG_SLOT 2
-#define DRBBDUP_HIT_TABLE_SLOT 4
+#define DRBBDUP_HIT_TABLE_SLOT 3
 
 #define DRBBDUP_SCRATCH DR_REG_XAX
 
@@ -1440,7 +1440,7 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
 		if (tls_idx == -1)
 			return DRBBDUP_ERROR;
 
-		dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 6, 0);
+		dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 4, 0);
 
 		fp_new_case_cache_pc = init_fp_cache(drbbdup_handle_new_case);
 
@@ -1533,7 +1533,7 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 				|| !drmgr_unregister_thread_exit_event(drbbdup_thread_exit))
 			return DRBBDUP_ERROR;
 
-		dr_raw_tls_cfree(tls_raw_base, 6);
+		dr_raw_tls_cfree(tls_raw_base, 4);
 		drmgr_unregister_tls_field(tls_idx);
 //        dr_unregister_delete_event(deleted_frag);
 		drreg_exit();
