@@ -35,7 +35,6 @@
 #define DRBBDUP_COMPARATOR_SLOT 0
 #define DRBBDUP_XAX_REG_SLOT 1
 #define DRBBDUP_FLAG_REG_SLOT 2
-#define DRBBDUP_REVERT_TABLE_SLOT 3
 #define DRBBDUP_HIT_TABLE_SLOT 4
 
 #define DRBBDUP_SCRATCH DR_REG_XAX
@@ -80,7 +79,6 @@ typedef struct {
 	int case_index;
 	void *pre_analysis_data;
 	void **instrum_infos;
-	uint16_t revert_counts[TABLE_SIZE];
 	uint16_t hit_counts[TABLE_SIZE];
 
 } drbbdup_per_thread;
@@ -106,8 +104,6 @@ static hashtable_t case_manager_table;
 static drbbdup_options_priv_t opts;
 
 static app_pc fp_new_case_cache_pc = NULL;
-static app_pc fp_revert_cache_pc = NULL;
-static app_pc fp_stop_revert_cache_pc = NULL;
 
 static void *rw_lock;
 
@@ -129,8 +125,6 @@ static void drbbdup_stat_inc_instrum_bb();
 static void drbbdup_stat_inc_non_applicable();
 static void drbbdup_stat_no_fp();
 static void drbbdup_stat_inc_gen();
-static void drbbdup_stat_inc_revert();
-static void drbbdup_stat_inc_stop_revert();
 static void drbbdup_stat_inc_bb_size(uint size);
 static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
 		instr_t *where, int case_index);
@@ -158,10 +152,6 @@ static unsigned long no_fp = 0;
 static unsigned long total_exec = 0;
 /** Number of fast paths generated **/
 static unsigned long gen_num = 0;
-/** Number of Reverts **/
-static unsigned long revert_num = 0;
-/** Number of stop-reverts **/
-static unsigned long stop_revert_num = 0;
 
 /** Number of bails to slow path**/
 static unsigned long total_bails = 0;
@@ -189,21 +179,6 @@ static opnd_t drbbdup_get_tls_raw_slot_opnd(int slot_idx) {
 	return opnd_create_far_base_disp_ex(tls_raw_reg, REG_NULL, REG_NULL, 1,
 			tls_raw_base + (slot_idx * (sizeof(void *))),
 			OPSZ_PTR, false, true, false);
-}
-
-DR_EXPORT bool drbbdup_is_reverted(app_pc pc) {
-
-	bool is_reverted = false;
-
-	/* Fetch new case manager */
-	dr_rwlock_read_lock(rw_lock);
-	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-			&case_manager_table, pc);
-	if (manager)
-		is_reverted = manager->manager_opts.is_reverted;
-	dr_rwlock_read_unlock(rw_lock);
-
-	return is_reverted;
 }
 
 /**
@@ -312,8 +287,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
 			&case_manager_table, pc);
 
-	/* If reverted, return now */
-	if (manager != NULL && manager->manager_opts.is_reverted) {
+	if (manager != NULL) {
 		dr_rwlock_write_unlock(rw_lock);
 		return DR_EMIT_DEFAULT;
 	}
@@ -403,10 +377,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 		manager->manager_opts.enable_pop_threshold = false;
 		manager->manager_opts.max_pop_threshold = 0;
 		manager->default_case.condition_val = 0;
-
-		manager->manager_opts.enable_revert_check =
-				opts.fp_settings.enable_revert;
-		manager->manager_opts.is_reverted = false;
 
 		bool consider = opts.functions.create_manager(manager, drcontext, tag,
 				bb, &(manager->manager_opts),
@@ -692,7 +662,7 @@ static dr_emit_flags_t drbbdup_analyse_phase(void *drcontext, void *tag,
 	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
 			&case_manager_table, pc);
 
-	if (manager == NULL || manager->manager_opts.is_reverted) {
+	if (manager == NULL) {
 		dr_rwlock_read_unlock(rw_lock);
 		return DR_EMIT_DEFAULT;
 	}
@@ -788,40 +758,12 @@ static void drbbdup_insert_encoding(void *drcontext, drbbdup_per_thread *pt,
 	/* Restore unreserved registers */
 	drreg_restore_all_now(drcontext, bb, where);
 
-	opnd_t scratch_reg_opnd = opnd_create_reg(DRBBDUP_SCRATCH);
-
-//	if (manager->manager_opts.enable_revert_check) {
-//
-//		DR_ASSERT(!manager->manager_opts.is_reverted);
-//
-//		opnd_t revert_table_opnd = drbbdup_get_tls_raw_slot_opnd(
-//		DRBBDUP_REVERT_TABLE_SLOT);
-//
-//		instr = INSTR_CREATE_mov_ld(drcontext, scratch_reg_opnd,
-//				revert_table_opnd);
-//		instrlist_meta_preinsert(bb, where, instr);
-//
-//		uint hash = drbbdup_get_hitcount_hash((intptr_t) translation_pc);
-//		opnd_t revert_count_opnd = OPND_CREATE_MEM16(DRBBDUP_SCRATCH,
-//				hash * sizeof(ushort));
-//		opnd = opnd_create_immed_uint(1, OPSZ_2);
-//		instr = INSTR_CREATE_add(drcontext, revert_count_opnd, opnd);
-//		instrlist_meta_preinsert(bb, where, instr);
-//
-//		instr = INSTR_CREATE_mov_imm(drcontext, scratch_reg_opnd,
-//				opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
-//		instrlist_meta_preinsert(bb, where, instr);
-//
-//		instr = INSTR_CREATE_jcc(drcontext, OP_jo,
-//				opnd_create_pc(fp_stop_revert_cache_pc));
-//		instrlist_meta_preinsert(bb, where, instr);
-//	}
-
 	/**
 	 * Load the comparator value to register.
 	 * We could compare directly via addressable mem ref, but this will
 	 * destroy micro-fusing (mem and immed) !
 	 */
+	opnd_t scratch_reg_opnd = opnd_create_reg(DRBBDUP_SCRATCH);
 	opnd = drbbdup_get_comparator_opnd();
 	instr = INSTR_CREATE_mov_ld(drcontext, scratch_reg_opnd, opnd);
 	instrlist_meta_preinsert(bb, where, instr);
@@ -978,7 +920,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
 			&case_manager_table, pc);
 
-	if (manager == NULL || manager->manager_opts.is_reverted) {
+	if (manager == NULL) {
 		/** No fast path code wanted! Instrument normally and return! **/
 
 		dr_rwlock_read_unlock(rw_lock);
@@ -1253,8 +1195,6 @@ static void drbbdup_handle_new_case() {
 		}
 	}
 
-	manager->manager_opts.enable_revert_check = false;
-
 	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
 
 	dr_rwlock_write_unlock(rw_lock);
@@ -1278,123 +1218,6 @@ static void drbbdup_handle_new_case() {
 	dr_redirect_execution(&mcontext);
 }
 
-static void drbbdup_handle_revert() {
-
-#ifdef ENABLE_STATS
-	drbbdup_stat_inc_revert();
-#endif
-
-	void *drcontext = dr_get_current_drcontext();
-
-	/* Must use DR_MC_ALL due to dr_redirect_execution */
-	dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_ALL, };
-	dr_get_mcontext(drcontext, &mcontext);
-
-	void *tag = (void *) reg_get_value(DRBBDUP_SCRATCH, &mcontext);
-	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
-	instr_t *instr = instrlist_first_app(ilist);
-	app_pc bb_pc = instr_get_app_pc(instr);
-	instrlist_clear_and_destroy(drcontext, ilist);
-
-	bool already_reverted = false;
-
-	/* Look up case manager */
-	dr_rwlock_write_lock(rw_lock);
-
-	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-			&case_manager_table, bb_pc);
-
-	if (!manager)
-		DR_ASSERT_MSG(false, "Can't find manager!\n");
-
-	already_reverted = !manager->manager_opts.enable_revert_check;
-
-	if (!already_reverted) {
-		DR_ASSERT(!manager->manager_opts.is_reverted);
-		DR_ASSERT(manager->manager_opts.enable_revert_check);
-		manager->manager_opts.is_reverted = true;
-		manager->manager_opts.enable_revert_check = false;
-
-	} else {
-		DR_ASSERT(!manager->manager_opts.enable_revert_check);
-	}
-
-	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
-
-	dr_rwlock_write_unlock(rw_lock);
-
-	if (!already_reverted) {
-		drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
-				drcontext, tls_idx);
-
-		LOG(drcontext, DR_LOG_ALL, 2, "%s Reverting for basic block %p\n",
-				__FUNCTION__, bb_pc);
-
-		uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
-		DR_ASSERT(pt->revert_counts[hash] == 0);
-		pt->revert_counts[hash] = opts.fp_settings.revert_threshold;
-
-		bool succ = dr_delete_shared_fragment(tag);
-		DR_ASSERT(succ);
-	}
-
-	dr_redirect_execution(&mcontext);
-}
-
-static void drbbdup_handle_stop_revert() {
-
-#ifdef ENABLE_STATS
-	drbbdup_stat_inc_stop_revert();
-#endif
-
-	void *drcontext = dr_get_current_drcontext();
-
-	/* Must use DR_MC_ALL due to dr_redirect_execution */
-	dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_ALL, };
-	dr_get_mcontext(drcontext, &mcontext);
-
-	void *tag = (void *) reg_get_value(DRBBDUP_SCRATCH, &mcontext);
-
-	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
-	instr_t *instr = instrlist_first_app(ilist);
-	app_pc bb_pc = instr_get_app_pc(instr);
-	instrlist_clear_and_destroy(drcontext, ilist);
-
-	bool already_reverted = false;
-
-	/* Look up case manager */
-	dr_rwlock_write_lock(rw_lock);
-
-	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-			&case_manager_table, bb_pc);
-
-	if (!manager)
-		DR_ASSERT_MSG(false, "Can't find manager!\n");
-
-	already_reverted = !manager->manager_opts.enable_revert_check;
-
-	if (!already_reverted) {
-		DR_ASSERT(manager->manager_opts.enable_revert_check);
-		manager->manager_opts.enable_revert_check = false;
-	}
-
-	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
-
-	dr_rwlock_write_unlock(rw_lock);
-
-	if (!already_reverted) {
-		drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
-				drcontext, tls_idx);
-
-		uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
-		pt->revert_counts[hash] = opts.fp_settings.revert_threshold;
-
-		bool succ = dr_delete_shared_fragment(tag);
-		DR_ASSERT(succ);
-	}
-
-	dr_redirect_execution(&mcontext);
-}
 
 static app_pc init_fp_cache(void (*clean_call_func)()) {
 
@@ -1536,19 +1359,10 @@ static void drbbdup_thread_init(void *drcontext) {
 		pt->hit_counts[i] = opts.fp_settings.hit_threshold;
 	}
 
-	for (int i = 0; i < TABLE_SIZE; i++) {
-		pt->revert_counts[i] = opts.fp_settings.revert_threshold;
-	}
-
 	byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
 			+ (DRBBDUP_HIT_TABLE_SLOT * (sizeof(void *))));
 	void **addr_hitcount = (void **) addr;
 	*addr_hitcount = pt->hit_counts;
-
-	addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
-			+ (DRBBDUP_REVERT_TABLE_SLOT * (sizeof(void *))));
-	void **addr_revertcount = (void **) addr;
-	*addr_revertcount = pt->revert_counts;
 
 	drmgr_set_tls_field(drcontext, tls_idx, (void *) pt);
 }
@@ -1579,8 +1393,6 @@ static void drbbdup_set_options(drbbdup_options_t *ops_in,
 		opts.fp_settings.dup_limit = 3;
 		opts.fp_settings.required_size = 0;
 		opts.fp_settings.hit_threshold = 3500;
-		opts.fp_settings.enable_revert = true;
-		opts.fp_settings.revert_threshold = 5000;
 
 	} else {
 		memcpy(&(opts.fp_settings), fp_settings_in,
@@ -1588,7 +1400,6 @@ static void drbbdup_set_options(drbbdup_options_t *ops_in,
 	}
 
 	DR_ASSERT(opts.fp_settings.dup_limit > 0);
-	DR_ASSERT(opts.fp_settings.revert_threshold < 30000);
 
 	memcpy(&(opts.functions), ops_in, sizeof(drbbdup_options_t));
 }
@@ -1632,8 +1443,6 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
 		dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 6, 0);
 
 		fp_new_case_cache_pc = init_fp_cache(drbbdup_handle_new_case);
-		fp_revert_cache_pc = init_fp_cache(drbbdup_handle_revert);
-		fp_stop_revert_cache_pc = init_fp_cache(drbbdup_handle_stop_revert);
 
 		/**
 		 * We initialise the hash table that keeps track of defined cases per
@@ -1714,10 +1523,6 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 
 		DR_ASSERT(fp_new_case_cache_pc);
 		destroy_fp_cache(fp_new_case_cache_pc);
-		DR_ASSERT(fp_revert_cache_pc);
-		destroy_fp_cache(fp_revert_cache_pc);
-		DR_ASSERT(fp_stop_revert_cache_pc);
-		destroy_fp_cache(fp_stop_revert_cache_pc);
 
 		drmgr_unregister_bb_app2app_event(drbbdup_duplicate_phase);
 
@@ -1798,20 +1603,6 @@ static void drbbdup_stat_inc_gen() {
 	dr_mutex_unlock(stat_mutex);
 }
 
-static void drbbdup_stat_inc_revert() {
-
-	dr_mutex_lock(stat_mutex);
-	revert_num++;
-	dr_mutex_unlock(stat_mutex);
-}
-
-static void drbbdup_stat_inc_stop_revert() {
-
-	dr_mutex_lock(stat_mutex);
-	stop_revert_num++;
-	dr_mutex_unlock(stat_mutex);
-}
-
 static void drbbdup_stat_inc_bb_size(uint size) {
 
 	dr_mutex_lock(stat_mutex);
@@ -1889,9 +1680,6 @@ static void drbbdup_stat_print_stats() {
 
 	dr_fprintf(time_file, "Number of fast paths generated (bb): %lu\n",
 			gen_num);
-	dr_fprintf(time_file, "Number of reverts (bb): %lu\n", revert_num);
-	dr_fprintf(time_file, "Number of stop-reverts (bb): %lu\n",
-			stop_revert_num);
 
 	dr_fprintf(time_file, "Total bb exec: %lu\n", total_exec);
 	dr_fprintf(time_file, "Total bails: %lu\n", total_bails);
