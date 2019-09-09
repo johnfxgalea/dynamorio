@@ -44,17 +44,8 @@ typedef enum {
 /**
  * TODO
  */
-typedef struct {
-    bool enable_dynamic_fp;
-    bool enable_pop_threshold;
-    size_t max_pop_threshold;
-} drbbdup_manager_options_t;
-
-/**
- * TODO
- */
 typedef bool (*drbbdup_create_default_manager_t)(void *drbbdup_ctx,
-        void *drcontext, void *tag, instrlist_t *bb, drbbdup_manager_options_t *options,
+        void *drcontext, void *tag, instrlist_t *bb, bool *is_dynamic,
         uint *default_case_value, void *user_data);
 
 /**
@@ -107,9 +98,14 @@ typedef void (*drbbdup_nan_instrument_bb_t)(void *drcontext, instrlist_t *bb,
 typedef void (*drbbdup_get_comparator_t)(void *drcontext, instrlist_t *bb,
         instr_t *where, void *user_data, void *pre_analysis_data);
 
+/**
+ * TODO
+ */
+typedef void (*drbbdup_insert_unsupported_case_stub_t)(void *drcontext, void *tag, instrlist_t *bb,
+        instr_t *where, reg_id_t scratch_id, opnd_t done_target);
+
 /** Specifies the options when initialising drbbdup. */
 typedef struct {
-
     drbbdup_create_default_manager_t create_manager;
     drbbdup_pre_analyse_bb_t pre_analyse_bb;
     drbbdup_destroy_pre_analysis_t destroy_pre_analysis;
@@ -118,6 +114,7 @@ typedef struct {
     drbbdup_instrument_bb_t instrument_bb;
     drbbdup_nan_instrument_bb_t nan_instrument_bb;
     drbbdup_get_comparator_t get_comparator;
+    drbbdup_insert_unsupported_case_stub_t insert_unsupported_case_stub;
     void *user_data;
 } drbbdup_options_t;
 
@@ -125,7 +122,6 @@ typedef struct {
 typedef struct {
     uint required_size;
     int dup_limit;
-    ushort hit_threshold;
 } drbbdup_fp_settings_t;
 
 /**
