@@ -254,15 +254,9 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 	drbbdup_stat_inc_bb();
 #endif
 
-	/* Fetch new case manager */
 	dr_rwlock_write_lock(rw_lock);
 	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
 			&case_manager_table, pc);
-
-	if (manager != NULL) {
-		dr_rwlock_write_unlock(rw_lock);
-		return DR_EMIT_DEFAULT;
-	}
 
 	/* If the first instruction is a branch statement, we simply return.
 	 * We do not duplicate cti instructions because we need to abide by bb rules -
@@ -299,6 +293,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 #ifdef ENABLE_STATS
 		drbbdup_stat_inc_non_applicable();
 #endif
+
 		dr_rwlock_write_unlock(rw_lock);
 		/** Too small. **/
 		return DR_EMIT_DEFAULT;
@@ -629,6 +624,7 @@ static dr_emit_flags_t drbbdup_analyse_phase(void *drcontext, void *tag,
 
 	/* Fetch hashtable */
 	dr_rwlock_read_lock(rw_lock);
+
 	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
 			&case_manager_table, pc);
 
@@ -1007,6 +1003,7 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 			}
 		}
 	}
+
 	dr_rwlock_read_unlock(rw_lock);
 
 	if (drmgr_is_last_instr(drcontext, instr)) {
