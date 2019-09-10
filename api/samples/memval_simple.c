@@ -218,7 +218,7 @@ instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, opnd_t ref)
     drx_buf_insert_buf_store(drcontext, trace_buffer, ilist, where, reg_ptr, reg_tmp,
                              OPND_CREATE_INT16(size), OPSZ_2, offsetof(mem_ref_t, size));
     drx_buf_insert_update_buf_ptr(drcontext, trace_buffer, ilist, where, reg_ptr,
-                                  DR_REG_NULL, sizeof(mem_ref_t));
+                                  DR_REG_NULL, sizeof(mem_ref_t), true);
 
     if (instr_is_call(where)) {
         app_pc pc;
@@ -237,7 +237,7 @@ instrument_mem(void *drcontext, instrlist_t *ilist, instr_t *where, opnd_t ref)
                                  DR_REG_NULL, OPND_CREATE_INTPTR((ptr_int_t)pc), OPSZ_PTR,
                                  0);
         drx_buf_insert_update_buf_ptr(drcontext, write_buffer, ilist, where, reg_ptr,
-                                      reg_tmp, sizeof(app_pc));
+                                      reg_tmp, sizeof(app_pc), true);
         /* we don't need to persist reg_tmp to the next instruction */
         if (drreg_unreserve_register(drcontext, ilist, where, reg_tmp) != DRREG_SUCCESS)
             DR_ASSERT(false);

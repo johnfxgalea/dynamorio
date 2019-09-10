@@ -104,7 +104,7 @@ event_app_instruction(void *drcontext, void *tag, instrlist_t *bb, instr_t *inst
     /* Internally this will update the TLS buffer pointer by incrementing just the bottom
      * 16 bits of the pointer.
      */
-    drx_buf_insert_update_buf_ptr(drcontext, buf, bb, inst, reg, reg2, sizeof(app_pc));
+    drx_buf_insert_update_buf_ptr(drcontext, buf, bb, inst, reg, reg2, sizeof(app_pc), true);
 
     if (drreg_unreserve_register(drcontext, bb, inst, reg) != DRREG_SUCCESS)
         DR_ASSERT(false);
