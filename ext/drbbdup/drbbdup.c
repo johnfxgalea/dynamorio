@@ -103,13 +103,6 @@ static drbbdup_options_priv_t opts;
 static void *rw_lock;
 
 /**************************************************************
- * Prototypes
- */
-
-static void
-drbbdup_handle_new_case();
-
-/**************************************************************
  * Stats
  */
 
@@ -178,15 +171,6 @@ drbbdup_get_comparator() {
 	byte *addr = dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base;
 	void **comparator_addr = (void **) addr;
 	return *comparator_addr;
-}
-
-static reg_t drbbdup_get_spilled(int slot_idx) {
-
-	byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
-			+ (slot_idx * (sizeof(void *))));
-
-	void **value = (void **) addr;
-	return (reg_t) *value;
 }
 
 DR_EXPORT void drbbdup_set_comparator(void *comparator_val) {
@@ -1051,93 +1035,6 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 	}
 
 	return DR_EMIT_DEFAULT;
-}
-
-/************************************************************************
- * New Case HANDING
- */
-
-static void drbbdup_prepare_redirect(dr_mcontext_t *mcontext,
-		drbbdup_manager_t *manager, app_pc bb_pc) {
-
-	if (!manager->is_eflag_dead) {
-		// Eflag restoration is taken from drreg. Should move it upon release.
-		reg_t newval = mcontext->xflags;
-		reg_t val;
-		uint sahf;
-		val = drbbdup_get_spilled(DRBBDUP_FLAG_REG_SLOT);
-		sahf = (val & 0xff00) >> 8;
-		newval &= ~(EFLAGS_ARITH);
-		newval |= sahf;
-		if (TEST(1, val)) /* seto */
-			newval |= EFLAGS_OF;
-		mcontext->xflags = newval;
-	}
-	if (!manager->is_xax_dead)
-		reg_set_value(DRBBDUP_SCRATCH, mcontext,
-				drbbdup_get_spilled(DRBBDUP_XAX_REG_SLOT));
-	mcontext->pc = bb_pc;
-
-}
-
-static void drbbdup_handle_new_case() {
-
-#ifdef ENABLE_STATS
-	drbbdup_stat_inc_gen();
-#endif
-
-	void *drcontext = dr_get_current_drcontext();
-
-	/* Must use DR_MC_ALL due to dr_redirect_execution */
-	dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_ALL, };
-	dr_get_mcontext(drcontext, &mcontext);
-
-	void *tag = (void *) reg_get_value(DRBBDUP_SCRATCH, &mcontext);
-
-	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
-	instr_t *instr = instrlist_first_app(ilist);
-	app_pc bb_pc = instr_get_app_pc(instr);
-	instrlist_clear_and_destroy(drcontext, ilist);
-
-	/* Get the missing case */
-	reg_t conditional_val = (reg_t) drbbdup_get_comparator();
-
-	/* Look up case manager */
-	dr_rwlock_write_lock(rw_lock);
-
-	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-			&case_manager_table, bb_pc);
-
-	if (!manager)
-		DR_ASSERT_MSG(false, "Can't find manager!\n");
-
-	/* Find an undefined case, and set it up for the new conditional. */
-
-	/* Check whether the default case is actually the missing case. */
-
-	int i;
-	for (i = 0; i < opts.fp_settings.dup_limit; i++) {
-
-		if (!(manager->cases[i].is_defined)) {
-
-			manager->cases[i].is_defined = true;
-			manager->cases[i].condition_val =
-					(unsigned int) (uintptr_t) conditional_val;
-			break;
-		}
-	}
-
-	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
-
-	dr_rwlock_write_unlock(rw_lock);
-
-	LOG(drcontext, DR_LOG_ALL, 2, "%s Found new taint case! I am about to flush for %p\n",
-			__FUNCTION__, bb_pc);
-
-	bool succ = dr_delete_shared_fragment(tag);
-	DR_ASSERT(succ);
-
-	dr_redirect_execution(&mcontext);
 }
 
 ///******************************************************************
