@@ -1073,6 +1073,61 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
  * INIT
  */
 
+DR_EXPORT void * drbbdup_create_bb_drbbdup_ctx(app_pc pc, uint default_case) {
+
+	dr_rwlock_write_lock(rw_lock);
+	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+			&case_manager_table, pc);
+
+	if (manager == NULL){
+
+		/* If manager is not available, we need to create a default one */
+		manager = dr_global_alloc(sizeof(drbbdup_manager_t));
+		memset(manager, 0, sizeof(drbbdup_manager_t));
+
+		manager->cases = dr_global_alloc(
+				sizeof(drbbdup_case_t) * opts.fp_settings.dup_limit);
+		memset(manager->cases, 0,
+				sizeof(drbbdup_case_t) * opts.fp_settings.dup_limit);
+		DR_ASSERT(opts.functions.create_manager);
+
+		manager->enable_unsupported_case_stub = true;
+		manager->default_case.condition_val = default_case;
+		manager->default_case.is_defined = true;
+		hashtable_add(&case_manager_table, pc, manager);
+	}
+
+	dr_rwlock_write_unlock(rw_lock);
+
+	return (void *) manager;
+}
+
+
+DR_EXPORT void * drbbdup_get_bb_drbbdup_ctx(app_pc pc) {
+
+	dr_rwlock_read_lock(rw_lock);
+	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+			&case_manager_table, pc);
+	dr_rwlock_read_unlock(rw_lock);
+
+	return (void *) manager;
+}
+
+DR_EXPORT drbbdup_status_t drbbdup_enable_unsupported_case_stub(
+		void *drbbdup_ctx, bool is_enabled) {
+
+	drbbdup_manager_t *manager = (drbbdup_manager_t *) drbbdup_ctx;
+
+	if (manager != NULL) {
+		dr_rwlock_write_lock(rw_lock);
+		manager->enable_unsupported_case_stub = is_enabled;
+		dr_rwlock_write_unlock(rw_lock);
+		return DRBBDUP_SUCCESS;
+	} else {
+		return DRBBDUP_ERROR;
+	}
+}
+
 DR_EXPORT drbbdup_status_t drbbdup_register_case_value(void *drbbdup_ctx,
 		uint case_val) {
 
