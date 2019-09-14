@@ -5526,6 +5526,111 @@ is_couldbelinking(dcontext_t *dcontext)
             pt != NULL /*PR 536058: no pt*/ && pt->could_be_linking);
 }
 
+bool
+dr_fragment_delete_shared(void *tag)
+{
+    dcontext_t *dcontext = get_thread_private_dcontext();
+    fragment_t *f;
+
+    if (is_couldbelinking(dcontext))
+        return false;
+
+    /* suspend threads to invalidate private ibts */
+    thread_record_t **flush_threads;
+      int flush_num_threads;
+      const thread_synch_state_t desired_state =
+              THREAD_SYNCH_SUSPENDED_VALID_MCONTEXT_OR_NO_XFER;
+      synch_with_all_threads(desired_state, &flush_threads,
+              &flush_num_threads, THREAD_SYNCH_NO_LOCKS_NO_XFER,
+              THREAD_SYNCH_SUSPEND_FAILURE_IGNORE);
+
+      enter_couldbelinking(dcontext, NULL, false);
+
+      /* get the fragment */
+      f = fragment_lookup(dcontext, tag);
+      if (f != NULL && (f->flags & FRAG_CANNOT_DELETE) == 0) {
+
+          /* check if the frag is shared */
+          if (!TEST(FRAG_SHARED, f->flags)){
+              enter_nolinking(dcontext, NULL, false);
+              end_synch_with_all_threads(flush_threads, flush_num_threads, true);
+              return false;
+          }
+
+          if (TEST(FRAG_IS_TRACE, f->flags)) {
+              d_r_mutex_lock(&trace_building_lock);
+          }
+          d_r_mutex_lock(&bb_building_lock);
+
+          /*  check if frag is already deleted*/
+          if (TEST(FRAG_WAS_DELETED, f->flags)) {
+              d_r_mutex_unlock(&bb_building_lock);
+              if (TEST(FRAG_IS_TRACE, f->flags))
+                  d_r_mutex_unlock(&trace_building_lock);
+              enter_nolinking(dcontext, NULL, false);
+              end_synch_with_all_threads(flush_threads, flush_num_threads, true);
+
+              return true;
+          }
+
+          acquire_recursive_lock(&change_linking_lock);
+          acquire_vm_areas_lock(dcontext, f->flags);
+
+          /* unlink frag */
+          if (TEST(FRAG_LINKED_OUTGOING, f->flags))
+              unlink_fragment_outgoing(GLOBAL_DCONTEXT, f);
+          if (TEST(FRAG_LINKED_INCOMING, f->flags))
+              unlink_fragment_incoming(GLOBAL_DCONTEXT, f);
+          incoming_remove_fragment(GLOBAL_DCONTEXT, f);
+
+
+          /* invalidate private IBTs */
+          if (SHARED_IB_TARGETS()) {
+            if (!SHARED_IBT_TABLES_ENABLED()) {
+
+                int i;
+                for (i = 0; i < flush_num_threads; i++) {
+                    fragment_prepare_for_removal(flush_threads[i]->dcontext, f);
+                }
+            }
+        }
+
+          fragment_prepare_for_removal(GLOBAL_DCONTEXT, f);
+          fragment_remove(GLOBAL_DCONTEXT, f);
+
+          /* remove virtual mem */
+          vm_area_remove_fragment(dcontext, f);
+          f->flags |= FRAG_WAS_DELETED;
+
+          release_vm_areas_lock(dcontext, f->flags);
+          release_recursive_lock(&change_linking_lock);
+
+          if (!TEST(FRAG_HAS_TRANSLATION_INFO, f->flags))
+              fragment_record_translation_info(dcontext, f, NULL);
+
+          d_r_mutex_unlock(&bb_building_lock);
+          if (TEST(FRAG_IS_TRACE, f->flags)) {
+              d_r_mutex_unlock(&trace_building_lock);
+          }
+
+          /* resume threads again as adding frag for lazy deletion
+           * requires no locks. Frag is completely unreachable, so should be
+           * safe.
+           */
+          end_synch_with_all_threads(flush_threads, flush_num_threads, true);
+
+          add_to_lazy_deletion_list(dcontext, f);
+          enter_nolinking(dcontext, NULL, false);
+          return true;
+
+      }else{
+          enter_nolinking(dcontext, NULL, false);
+          end_synch_with_all_threads(flush_threads, flush_num_threads, true);
+          return false;
+      }
+}
+
+
 static void
 wait_for_flusher_nolinking(dcontext_t *dcontext)
 {
@@ -5607,22 +5712,29 @@ process_client_flush_requests(dcontext_t *dcontext, dcontext_t *alloc_dcontext,
     client_flush_req_t *iter = req;
     while (iter != NULL) {
         client_flush_req_t *next = iter->next;
-        if (flush) {
-            /* Note that we don't free futures from potentially linked-to region b/c we
-             * don't have lazy linking (xref case 2236) */
-            /* FIXME - if there's more then one of these would be nice to batch them
-             * especially for the synch all ones. */
-            if (iter->flush_callback != NULL) {
-                /* FIXME - for implementation simplicity we do a synch-all flush so
-                 * that we can inform the client right away, it might be nice to use
-                 * the more performant regular flush when possible. */
-                flush_fragments_from_region(dcontext, iter->start, iter->size,
-                                            true /*force synchall*/);
-                (*iter->flush_callback)(iter->flush_id);
-            } else {
-                /* do a regular flush */
-                flush_fragments_from_region(dcontext, iter->start, iter->size,
-                                            false /*don't force synchall*/);
+
+        if (iter->is_just_fragment){
+
+        	dr_fragment_delete_shared(iter->tag);
+
+        }else{
+            if (flush) {
+                /* Note that we don't free futures from potentially linked-to region b/c we
+                 * don't have lazy linking (xref case 2236) */
+                /* FIXME - if there's more then one of these would be nice to batch them
+                 * especially for the synch all ones. */
+                if (iter->flush_callback != NULL) {
+                    /* FIXME - for implementation simplicity we do a synch-all flush so
+                     * that we can inform the client right away, it might be nice to use
+                     * the more performant regular flush when possible. */
+                    flush_fragments_from_region(dcontext, iter->start, iter->size,
+                                                true /*force synchall*/);
+                    (*iter->flush_callback)(iter->flush_id);
+                } else {
+                    /* do a regular flush */
+                    flush_fragments_from_region(dcontext, iter->start, iter->size,
+                                                false /*don't force synchall*/);
+                }
             }
         }
         HEAP_TYPE_FREE(alloc_dcontext, iter, client_flush_req_t, ACCT_CLIENT,
