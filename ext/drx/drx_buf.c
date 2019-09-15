@@ -94,7 +94,7 @@ per_thread_init_fault(void *drcontext, drx_buf_t *buf);
 static void
 drx_buf_insert_update_buf_ptr_2byte(void *drcontext, drx_buf_t *buf, instrlist_t *ilist,
                                     instr_t *where, reg_id_t buf_ptr, reg_id_t scratch,
-                                    ushort stride, bool check_flags);
+                                    ushort stride);
 static void
 drx_buf_insert_update_buf_ptr_fault(void *drcontext, drx_buf_t *buf, instrlist_t *ilist,
                                     instr_t *where, reg_id_t buf_ptr, ushort stride);
@@ -385,11 +385,11 @@ DR_EXPORT
 void
 drx_buf_insert_update_buf_ptr(void *drcontext, drx_buf_t *buf, instrlist_t *ilist,
                               instr_t *where, reg_id_t buf_ptr, reg_id_t scratch,
-                              ushort stride, bool check_flags)
+                              ushort stride)
 {
     if (buf->buf_type == DRX_BUF_CIRCULAR_FAST) {
         drx_buf_insert_update_buf_ptr_2byte(drcontext, buf, ilist, where, buf_ptr,
-                                            scratch, stride, check_flags);
+                                            scratch, stride);
     } else {
         drx_buf_insert_update_buf_ptr_fault(drcontext, buf, ilist, where, buf_ptr,
                                             stride);
@@ -399,7 +399,7 @@ drx_buf_insert_update_buf_ptr(void *drcontext, drx_buf_t *buf, instrlist_t *ilis
 static void
 drx_buf_insert_update_buf_ptr_2byte(void *drcontext, drx_buf_t *buf, instrlist_t *ilist,
                                     instr_t *where, reg_id_t buf_ptr, reg_id_t scratch,
-                                    ushort stride, bool check_flags)
+                                    ushort stride)
 {
 #ifdef X86
     /* To get the "rotating" effect, we update only the bottom bits of the register. */
@@ -733,7 +733,7 @@ drx_buf_insert_buf_memcpy(void *drcontext, drx_buf_t *buf, instrlist_t *ilist,
         DR_ASSERT(ok);
     }
     /* update buf ptr, so that client does not have to */
-    drx_buf_insert_update_buf_ptr(drcontext, buf, ilist, where, dst, src, len, true);
+    drx_buf_insert_update_buf_ptr(drcontext, buf, ilist, where, dst, src, len);
 }
 
 /* assumes that the instruction writes memory relative to some buffer pointer */

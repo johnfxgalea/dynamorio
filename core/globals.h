@@ -369,8 +369,6 @@ typedef struct _client_to_do_list_t {
 
 /* Clients need a separate list to queue up flush requests from dr_flush() */
 typedef struct _client_flush_req_t {
-	bool is_just_fragment;
-	void *tag;
     app_pc start;
     size_t size;
     uint flush_id; /* client supplied identifier for this flush */

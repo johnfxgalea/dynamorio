@@ -35,6 +35,7 @@
 #define DRBBDUP_COMPARATOR_SLOT 0
 #define DRBBDUP_XAX_REG_SLOT 1
 #define DRBBDUP_FLAG_REG_SLOT 2
+#define DRBBDUP_HIT_TABLE_SLOT 3
 
 #define DRBBDUP_SCRATCH DR_REG_XAX
 
@@ -61,7 +62,7 @@ typedef struct {
 	drbbdup_case_t *cases;
 	bool is_eflag_dead;
 	bool is_xax_dead;
-	bool enable_unsupported_case_stub;
+	drbbdup_manager_options_t manager_opts;
 } drbbdup_manager_t;
 
 /**
@@ -78,6 +79,8 @@ typedef struct {
 	int case_index;
 	void *pre_analysis_data;
 	void **instrum_infos;
+	uint16_t hit_counts[TABLE_SIZE];
+
 } drbbdup_per_thread;
 
 /*************************************************************************
@@ -100,7 +103,16 @@ static hashtable_t case_manager_table;
 
 static drbbdup_options_priv_t opts;
 
+static app_pc fp_new_case_cache_pc = NULL;
+
 static void *rw_lock;
+
+/**************************************************************
+ * Prototypes
+ */
+
+static void
+drbbdup_handle_new_case();
 
 /**************************************************************
  * Stats
@@ -116,6 +128,10 @@ static void drbbdup_stat_inc_gen();
 static void drbbdup_stat_inc_bb_size(uint size);
 static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
 		instr_t *where, int case_index);
+static void drbbdup_stat_clean_bail_entry(void *drcontext, instrlist_t *bb,
+		instr_t *where);
+static void drbbdup_stat_popcnt_entry(void *drcontext, instrlist_t *bb,
+		instr_t *where);
 static void drbbdup_stat_clean_bb_exec(void *drcontext, instrlist_t *bb,
 		instr_t *where);
 static void drbbdup_stat_print_stats();
@@ -139,6 +155,9 @@ static unsigned long gen_num = 0;
 
 /** Number of bails to slow path**/
 static unsigned long total_bails = 0;
+
+/** Number of popcnt fails to slow path**/
+static unsigned long total_popcnt = 0;
 
 /** Number of case entries **/
 static unsigned long *case_num = NULL;
@@ -171,6 +190,15 @@ drbbdup_get_comparator() {
 	byte *addr = dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base;
 	void **comparator_addr = (void **) addr;
 	return *comparator_addr;
+}
+
+static reg_t drbbdup_get_spilled(int slot_idx) {
+
+	byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
+			+ (slot_idx * (sizeof(void *))));
+
+	void **value = (void **) addr;
+	return (reg_t) *value;
 }
 
 DR_EXPORT void drbbdup_set_comparator(void *comparator_val) {
@@ -251,12 +279,18 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
 	if (!for_trace)
-	drbbdup_stat_inc_bb();
+		drbbdup_stat_inc_bb();
 #endif
 
+	/* Fetch new case manager */
 	dr_rwlock_write_lock(rw_lock);
 	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
 			&case_manager_table, pc);
+
+	if (manager != NULL) {
+		dr_rwlock_write_unlock(rw_lock);
+		return DR_EMIT_DEFAULT;
+	}
 
 	/* If the first instruction is a branch statement, we simply return.
 	 * We do not duplicate cti instructions because we need to abide by bb rules -
@@ -293,7 +327,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 #ifdef ENABLE_STATS
 		drbbdup_stat_inc_non_applicable();
 #endif
-
 		dr_rwlock_write_unlock(rw_lock);
 		/** Too small. **/
 		return DR_EMIT_DEFAULT;
@@ -340,11 +373,13 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 				sizeof(drbbdup_case_t) * opts.fp_settings.dup_limit);
 		DR_ASSERT(opts.functions.create_manager);
 
-		manager->enable_unsupported_case_stub = true;
+		manager->manager_opts.enable_dynamic_fp = true;
+		manager->manager_opts.enable_pop_threshold = false;
+		manager->manager_opts.max_pop_threshold = 0;
 		manager->default_case.condition_val = 0;
 
 		bool consider = opts.functions.create_manager(manager, drcontext, tag,
-				bb, &(manager->enable_unsupported_case_stub),
+				bb, &(manager->manager_opts),
 				&(manager->default_case.condition_val),
 				opts.functions.user_data);
 
@@ -388,8 +423,8 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 #endif
 
 #ifdef ENABLE_STATS
-	if (!manager->enable_unsupported_case_stub)
-	drbbdup_stat_no_fp();
+	if (!manager->manager_opts.enable_dynamic_fp)
+		drbbdup_stat_no_fp();
 #endif
 
 	/**
@@ -624,7 +659,6 @@ static dr_emit_flags_t drbbdup_analyse_phase(void *drcontext, void *tag,
 
 	/* Fetch hashtable */
 	dr_rwlock_read_lock(rw_lock);
-
 	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
 			&case_manager_table, pc);
 
@@ -660,6 +694,14 @@ static void drbbdup_insert_landing_restoration(void *drcontext, instrlist_t *bb,
 
 	if (!manager->is_xax_dead)
 		drbbdup_restore_register(drcontext, bb, where, 1, DRBBDUP_SCRATCH);
+}
+
+static uint drbbdup_get_hitcount_hash(intptr_t bb_id) {
+
+	uint hash = ((uint) bb_id) << 1;
+	hash &= (TABLE_SIZE - 1); //
+	DR_ASSERT(hash < TABLE_SIZE);
+	return hash;
 }
 
 static bool include_path_gen(drbbdup_manager_t *manager) {
@@ -745,74 +787,120 @@ static void drbbdup_insert_chain(void *drcontext, instrlist_t *bb,
 	drbbdup_insert_landing_restoration(drcontext, bb, where, manager);
 }
 
-static void drbbdup_insert_jmp_to_default(void *drcontext, instrlist_t *bb,
-		instr_t *where, drbbdup_manager_t *manager, opnd_t mask_opnd,
-		opnd_t done_target) {
-
-	opnd_t opnd;
-	instr_t *instr;
-
-	drbbdup_case_t *default_info = &(manager->default_case);
-	DR_ASSERT(default_info != NULL);
-	DR_ASSERT(default_info->is_defined);
-
-	/* If conditional is not defined, perform default check */
-	opnd = opnd_create_immed_uint((uintptr_t) default_info->condition_val,
-			opnd_size_from_bytes(sizeof(default_info->condition_val)));
-	instr = INSTR_CREATE_cmp(drcontext, mask_opnd, opnd);
-	instrlist_meta_preinsert(bb, where, instr);
-
-	instr = INSTR_CREATE_jcc(drcontext, OP_jz, done_target);
-	instrlist_meta_preinsert(bb, where, instr);
-}
-
 static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
 		void *tag, instrlist_t *bb, instr_t *where, drbbdup_manager_t *manager) {
 
 	instr_t *instr;
+	opnd_t opnd;
 
-	if (manager->enable_unsupported_case_stub && include_path_gen(manager)) {
+	instr_t *done_label = INSTR_CREATE_label(drcontext);
+	opnd_t mask_opnd = opnd_create_reg(DRBBDUP_SCRATCH);
 
-		instr_t *done_label = INSTR_CREATE_label(drcontext);
+	if (manager->manager_opts.enable_dynamic_fp) {
+		if (include_path_gen(manager)) {
 
-		if (opts.functions.insert_unsupported_case_stub == NULL) {
-
-			drbbdup_insert_jmp_to_default(drcontext, bb, where, manager,
-					opnd_create_reg(DRBBDUP_SCRATCH),
-					opnd_create_instr(done_label));
-
-			instrlist_meta_preinsert(bb, where, done_label);
-
-			drbbdup_insert_landing_restoration(drcontext, bb, where, manager);
-
-		} else {
-			reg_id_t mask_reg;
-
-			drbbdup_insert_landing_restoration(drcontext, bb, where, manager);
-
-			drreg_reserve_aflags(drcontext, bb, where);
-			drreg_reserve_register(drcontext, bb, where, NULL, &mask_reg);
-
-			instr = INSTR_CREATE_mov_ld(drcontext, opnd_create_reg(mask_reg),
-					drbbdup_get_comparator_opnd());
-			instrlist_meta_preinsert(bb, where, instr);
+			drbbdup_case_t *default_info = &(manager->default_case);
+			DR_ASSERT(default_info != NULL);
+			DR_ASSERT(default_info->is_defined);
 
 			/* If conditional is not defined, perform default check */
-			drbbdup_insert_jmp_to_default(drcontext, bb, where, manager,
-					opnd_create_reg(mask_reg), opnd_create_instr(done_label));
+			opnd = opnd_create_immed_uint(
+					(uintptr_t) default_info->condition_val,
+					opnd_size_from_bytes(sizeof(default_info->condition_val)));
+			instr = INSTR_CREATE_cmp(drcontext, mask_opnd, opnd);
+			instrlist_meta_preinsert(bb, where, instr);
 
-			opts.functions.insert_unsupported_case_stub(drcontext, tag, bb,
-					where, mask_reg, opnd_create_instr(done_label));
+			instr = INSTR_CREATE_jcc(drcontext, OP_jz,
+					opnd_create_instr(done_label));
+			instrlist_meta_preinsert(bb, where, instr);
 
-			instrlist_meta_preinsert(bb, where, done_label);
+			if (manager->manager_opts.enable_pop_threshold) {
 
-			drreg_unreserve_aflags(drcontext, bb, where);
-			drreg_unreserve_register(drcontext, bb, where, mask_reg);
+				instr = INSTR_CREATE_popcnt(drcontext, mask_opnd, mask_opnd);
+				instrlist_meta_preinsert(bb, where, instr);
+
+				opnd = opnd_create_immed_uint(
+						(uintptr_t) manager->manager_opts.max_pop_threshold,
+						OPSZ_PTR);
+				instr = INSTR_CREATE_cmp(drcontext, mask_opnd, opnd);
+				instrlist_meta_preinsert(bb, where, instr);
+
+#ifdef ENABLE_STATS
+
+				instr_t* popcnt_label = INSTR_CREATE_label(drcontext);
+
+				instr = INSTR_CREATE_jcc(drcontext, OP_jle,
+						opnd_create_instr(popcnt_label));
+				instrlist_meta_preinsert(bb, where, instr);
+
+				drbbdup_stat_popcnt_entry(drcontext, bb, where);
+
+				instr = INSTR_CREATE_jmp(drcontext,
+						opnd_create_instr(done_label));
+				instrlist_meta_preinsert(bb, where, instr);
+
+				instrlist_meta_preinsert(bb, where, popcnt_label);
+
+#else
+				instr = INSTR_CREATE_jcc(drcontext, OP_jg,
+						opnd_create_instr(done_label));
+				instrlist_meta_preinsert(bb, where, instr);
+#endif
+			}
+
+			if (opts.fp_settings.hit_threshold > 0) {
+
+				opnd_t hit_table_opnd;
+				hit_table_opnd = drbbdup_get_tls_raw_slot_opnd(
+				DRBBDUP_HIT_TABLE_SLOT);
+
+				/* Load the hit counter table */
+				instr = INSTR_CREATE_mov_ld(drcontext, mask_opnd,
+						hit_table_opnd);
+				instrlist_meta_preinsert(bb, where, instr);
+
+				uint hash = drbbdup_get_hitcount_hash(
+						(intptr_t) translation_pc);
+				opnd_t hit_count_opnd = OPND_CREATE_MEM16(DRBBDUP_SCRATCH,
+						hash * sizeof(ushort));
+				opnd = opnd_create_immed_uint(1, OPSZ_2);
+				instr = INSTR_CREATE_sub(drcontext, hit_count_opnd, opnd);
+				instrlist_meta_preinsert(bb, where, instr);
+
+				/* Insert new case handling here */
+				instr = INSTR_CREATE_mov_imm(drcontext, mask_opnd,
+						opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
+				instrlist_meta_preinsert(bb, where, instr);
+
+				opnd = opnd_create_pc(fp_new_case_cache_pc);
+				instr = INSTR_CREATE_jcc(drcontext, OP_jz, opnd);
+				instrlist_meta_preinsert(bb, where, instr);
+
+			} else {
+
+				/* Insert new case handling here */
+				instr = INSTR_CREATE_mov_imm(drcontext, mask_opnd,
+						opnd_create_immed_int((intptr_t) tag, OPSZ_PTR));
+				instrlist_meta_preinsert(bb, where, instr);
+
+				opnd = opnd_create_pc(fp_new_case_cache_pc);
+				instr = INSTR_CREATE_jmp(drcontext, opnd);
+				instrlist_meta_preinsert(bb, where, instr);
+			}
 		}
-	} else {
-		/* Even if dynamic fast paths are off, we still need to perform restoration landing */
-		drbbdup_insert_landing_restoration(drcontext, bb, where, manager);
+
+#ifdef ENABLE_STATS
+		else {
+
+			drbbdup_stat_clean_bail_entry(drcontext, bb, where);
+		}
+#endif
 	}
+
+	instrlist_meta_preinsert(bb, where, done_label);
+
+	drbbdup_insert_landing_restoration(drcontext, bb, where, manager);
+
 }
 
 static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
@@ -1003,7 +1091,6 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 			}
 		}
 	}
-
 	dr_rwlock_read_unlock(rw_lock);
 
 	if (drmgr_is_last_instr(drcontext, instr)) {
@@ -1032,6 +1119,143 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 	}
 
 	return DR_EMIT_DEFAULT;
+}
+
+/************************************************************************
+ * New Case HANDING
+ */
+
+static void drbbdup_prepare_redirect(dr_mcontext_t *mcontext,
+		drbbdup_manager_t *manager, app_pc bb_pc) {
+
+	if (!manager->is_eflag_dead) {
+		// Eflag restoration is taken from drreg. Should move it upon release.
+		reg_t newval = mcontext->xflags;
+		reg_t val;
+		uint sahf;
+		val = drbbdup_get_spilled(DRBBDUP_FLAG_REG_SLOT);
+		sahf = (val & 0xff00) >> 8;
+		newval &= ~(EFLAGS_ARITH);
+		newval |= sahf;
+		if (TEST(1, val)) /* seto */
+			newval |= EFLAGS_OF;
+		mcontext->xflags = newval;
+	}
+	if (!manager->is_xax_dead)
+		reg_set_value(DRBBDUP_SCRATCH, mcontext,
+				drbbdup_get_spilled(DRBBDUP_XAX_REG_SLOT));
+	mcontext->pc = bb_pc;
+
+}
+
+static void drbbdup_handle_new_case() {
+
+#ifdef ENABLE_STATS
+	drbbdup_stat_inc_gen();
+#endif
+
+	void *drcontext = dr_get_current_drcontext();
+
+	/* Must use DR_MC_ALL due to dr_redirect_execution */
+	dr_mcontext_t mcontext = { sizeof(mcontext), DR_MC_ALL, };
+	dr_get_mcontext(drcontext, &mcontext);
+
+	void *tag = (void *) reg_get_value(DRBBDUP_SCRATCH, &mcontext);
+
+	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
+	instr_t *instr = instrlist_first_app(ilist);
+	app_pc bb_pc = instr_get_app_pc(instr);
+	instrlist_clear_and_destroy(drcontext, ilist);
+
+	/* Get the missing case */
+	reg_t conditional_val = (reg_t) drbbdup_get_comparator();
+
+	/* Look up case manager */
+	dr_rwlock_write_lock(rw_lock);
+
+	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+			&case_manager_table, bb_pc);
+
+	if (!manager)
+		DR_ASSERT_MSG(false, "Can't find manager!\n");
+
+	/* Find an undefined case, and set it up for the new conditional. */
+
+	/* Check whether the default case is actually the missing case. */
+
+	int i;
+	for (i = 0; i < opts.fp_settings.dup_limit; i++) {
+
+		if (!(manager->cases[i].is_defined)) {
+
+			manager->cases[i].is_defined = true;
+			manager->cases[i].condition_val =
+					(unsigned int) (uintptr_t) conditional_val;
+			break;
+		}
+	}
+
+	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
+
+	dr_rwlock_write_unlock(rw_lock);
+
+	/* Refresh hit counter*/
+	drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
+			drcontext, tls_idx);
+
+	if (opts.fp_settings.hit_threshold > 0) {
+		uint hash = drbbdup_get_hitcount_hash((intptr_t) bb_pc);
+		DR_ASSERT(pt->hit_counts[hash] == 0);
+		pt->hit_counts[hash] = opts.fp_settings.hit_threshold;
+	}
+
+	LOG(drcontext, DR_LOG_ALL, 2, "%s Found new taint case! I am about to flush for %p\n",
+			__FUNCTION__, bb_pc);
+
+	bool succ = dr_delete_shared_fragment(tag);
+	DR_ASSERT(succ);
+
+	dr_redirect_execution(&mcontext);
+}
+
+
+static app_pc init_fp_cache(void (*clean_call_func)()) {
+
+	app_pc cache_pc;
+	instrlist_t *ilist;
+	size_t size;
+
+	void *drcontext = dr_get_current_drcontext();
+
+	ilist = instrlist_create(drcontext);
+
+	dr_insert_clean_call(drcontext, ilist, NULL, clean_call_func,
+	false, 0);
+
+	size = dr_page_size();
+
+	/*
+	 *  Allocate code cache, and set Read-Write-Execute permissions.
+	 *  The dr_nonheap_alloc function allows you to set permissions.
+	 */
+	cache_pc = (app_pc) dr_nonheap_alloc(size,
+	DR_MEMPROT_READ | DR_MEMPROT_WRITE | DR_MEMPROT_EXEC);
+
+	byte *end = instrlist_encode(drcontext, ilist, cache_pc, true);
+	instrlist_clear_and_destroy(drcontext, ilist);
+
+	DR_ASSERT(end - cache_pc <= (int ) size);
+
+// Change the permission Read-Write-Execute permissions.
+// In particular, we do not need to write the the private cache
+	dr_memory_protect(cache_pc, size, DR_MEMPROT_READ | DR_MEMPROT_EXEC);
+
+	return cache_pc;
+}
+
+static void destroy_fp_cache(app_pc cache_pc) {
+
+	dr_nonheap_free(cache_pc, dr_page_size());
 }
 
 ///******************************************************************
@@ -1072,61 +1296,6 @@ static dr_emit_flags_t drbbdup_link_phase(void *drcontext, void *tag,
 /************************************************************************
  * INIT
  */
-
-DR_EXPORT void * drbbdup_create_bb_drbbdup_ctx(app_pc pc, uint default_case) {
-
-	dr_rwlock_write_lock(rw_lock);
-	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-			&case_manager_table, pc);
-
-	if (manager == NULL){
-
-		/* If manager is not available, we need to create a default one */
-		manager = dr_global_alloc(sizeof(drbbdup_manager_t));
-		memset(manager, 0, sizeof(drbbdup_manager_t));
-
-		manager->cases = dr_global_alloc(
-				sizeof(drbbdup_case_t) * opts.fp_settings.dup_limit);
-		memset(manager->cases, 0,
-				sizeof(drbbdup_case_t) * opts.fp_settings.dup_limit);
-		DR_ASSERT(opts.functions.create_manager);
-
-		manager->enable_unsupported_case_stub = true;
-		manager->default_case.condition_val = default_case;
-		manager->default_case.is_defined = true;
-		hashtable_add(&case_manager_table, pc, manager);
-	}
-
-	dr_rwlock_write_unlock(rw_lock);
-
-	return (void *) manager;
-}
-
-
-DR_EXPORT void * drbbdup_get_bb_drbbdup_ctx(app_pc pc) {
-
-	dr_rwlock_read_lock(rw_lock);
-	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-			&case_manager_table, pc);
-	dr_rwlock_read_unlock(rw_lock);
-
-	return (void *) manager;
-}
-
-DR_EXPORT drbbdup_status_t drbbdup_enable_unsupported_case_stub(
-		void *drbbdup_ctx, bool is_enabled) {
-
-	drbbdup_manager_t *manager = (drbbdup_manager_t *) drbbdup_ctx;
-
-	if (manager != NULL) {
-		dr_rwlock_write_lock(rw_lock);
-		manager->enable_unsupported_case_stub = is_enabled;
-		dr_rwlock_write_unlock(rw_lock);
-		return DRBBDUP_SUCCESS;
-	} else {
-		return DRBBDUP_ERROR;
-	}
-}
 
 DR_EXPORT drbbdup_status_t drbbdup_register_case_value(void *drbbdup_ctx,
 		uint case_val) {
@@ -1186,6 +1355,15 @@ static void drbbdup_thread_init(void *drcontext) {
 	memset(pt->instrum_infos, 0,
 			sizeof(void *) * (opts.fp_settings.dup_limit + 1));
 
+	for (int i = 0; i < TABLE_SIZE; i++) {
+		pt->hit_counts[i] = opts.fp_settings.hit_threshold;
+	}
+
+	byte *addr = (dr_get_dr_segment_base(tls_raw_reg) + tls_raw_base
+			+ (DRBBDUP_HIT_TABLE_SLOT * (sizeof(void *))));
+	void **addr_hitcount = (void **) addr;
+	*addr_hitcount = pt->hit_counts;
+
 	drmgr_set_tls_field(drcontext, tls_idx, (void *) pt);
 }
 
@@ -1214,6 +1392,8 @@ static void drbbdup_set_options(drbbdup_options_t *ops_in,
 		/* Set default values for fp settings */
 		opts.fp_settings.dup_limit = 3;
 		opts.fp_settings.required_size = 0;
+		opts.fp_settings.hit_threshold = 3500;
+
 	} else {
 		memcpy(&(opts.fp_settings), fp_settings_in,
 				sizeof(drbbdup_fp_settings_t));
@@ -1260,7 +1440,9 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
 		if (tls_idx == -1)
 			return DRBBDUP_ERROR;
 
-		dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 3, 0);
+		dr_raw_tls_calloc(&(tls_raw_reg), &(tls_raw_base), 4, 0);
+
+		fp_new_case_cache_pc = init_fp_cache(drbbdup_handle_new_case);
 
 		/**
 		 * We initialise the hash table that keeps track of defined cases per
@@ -1339,6 +1521,9 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 
 	if (drbbdup_ref_count == 0) {
 
+		DR_ASSERT(fp_new_case_cache_pc);
+		destroy_fp_cache(fp_new_case_cache_pc);
+
 		drmgr_unregister_bb_app2app_event(drbbdup_duplicate_phase);
 
 		drmgr_unregister_bb_instrumentation_ex_event(NULL,
@@ -1348,7 +1533,7 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 				|| !drmgr_unregister_thread_exit_event(drbbdup_thread_exit))
 			return DRBBDUP_ERROR;
 
-		dr_raw_tls_cfree(tls_raw_base, 3);
+		dr_raw_tls_cfree(tls_raw_base, 4);
 		drmgr_unregister_tls_field(tls_idx);
 //        dr_unregister_delete_event(deleted_frag);
 		drreg_exit();
@@ -1436,9 +1621,35 @@ static void clean_call_case_entry(int i) {
 static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
 		instr_t *where, int case_index) {
 
-	dr_insert_clean_call(drcontext, bb, where, clean_call_case_entry,
-			false, 1,
-			OPND_CREATE_INTPTR(case_index));
+	dr_insert_clean_call(drcontext, bb, where, clean_call_case_entry, false, 1,
+	OPND_CREATE_INTPTR(case_index));
+}
+
+static void clean_call_bail_entry() {
+
+	dr_mutex_lock(stat_mutex);
+	total_bails++;
+	dr_mutex_unlock(stat_mutex);
+}
+
+static void drbbdup_stat_clean_bail_entry(void *drcontext, instrlist_t *bb,
+		instr_t *where) {
+
+	dr_insert_clean_call(drcontext, bb, where, clean_call_bail_entry, false, 0);
+}
+
+static void clean_call_popcnt_entry() {
+
+	dr_mutex_lock(stat_mutex);
+	total_popcnt++;
+	dr_mutex_unlock(stat_mutex);
+}
+
+static void drbbdup_stat_popcnt_entry(void *drcontext, instrlist_t *bb,
+		instr_t *where) {
+
+	dr_insert_clean_call(drcontext, bb, where, clean_call_popcnt_entry, false,
+			0);
 }
 
 static void clean_call_bb_execc() {
@@ -1451,8 +1662,7 @@ static void clean_call_bb_execc() {
 static void drbbdup_stat_clean_bb_exec(void *drcontext, instrlist_t *bb,
 		instr_t *where) {
 
-	dr_insert_clean_call(drcontext, bb, where, clean_call_bb_execc,
-			false, 0);
+	dr_insert_clean_call(drcontext, bb, where, clean_call_bb_execc, false, 0);
 }
 
 static void drbbdup_stat_print_stats() {
@@ -1465,17 +1675,18 @@ static void drbbdup_stat_print_stats() {
 	dr_fprintf(time_file, "Number of BB instrumented: %lu\n", bb_instrumented);
 
 	if (bb_instrumented != 0)
-	dr_fprintf(time_file, "Avg BB size: %lu\n\n",
-			total_size / bb_instrumented);
+		dr_fprintf(time_file, "Avg BB size: %lu\n\n",
+				total_size / bb_instrumented);
 
 	dr_fprintf(time_file, "Number of fast paths generated (bb): %lu\n",
 			gen_num);
 
 	dr_fprintf(time_file, "Total bb exec: %lu\n", total_exec);
 	dr_fprintf(time_file, "Total bails: %lu\n", total_bails);
+	dr_fprintf(time_file, "Total failed popcnt: %lu\n", total_popcnt);
 
 	for (int i = 0; i < opts.fp_settings.dup_limit + 1; i++)
-	dr_fprintf(time_file, "Case %d: %lu\n", i, case_num[i]);
+		dr_fprintf(time_file, "Case %d: %lu\n", i, case_num[i]);
 
 	dr_fprintf(time_file, "---------------------------\n");
 
@@ -1489,14 +1700,14 @@ void record_sample(void *drcontext, dr_mcontext_t *mcontext) {
 
 	unsigned long new_fp_taint_num = 0;
 	for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
-	new_fp_taint_num += case_num[i];
+		new_fp_taint_num += case_num[i];
 
 	new_fp_taint_num = new_fp_taint_num - prev_full_taint_num;
 	unsigned long new_fp_gen = gen_num - prev_fp_gen;
 
 	prev_full_taint_num = 0;
 	for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
-	prev_full_taint_num += case_num[i];
+		prev_full_taint_num += case_num[i];
 
 	prev_fp_gen = gen_num;
 

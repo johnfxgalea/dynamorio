@@ -6121,10 +6121,6 @@ dr_delay_flush_region(app_pc start, size_t size, uint flush_id,
                       void (*flush_completion_callback)(int flush_id));
 
 DR_API
-bool
-dr_delay_flush_fragment(void *tag);
-
-DR_API
 /** Returns whether or not there is a fragment in code cache with tag \p tag. */
 bool
 dr_fragment_exists_at(void *drcontext, void *tag);

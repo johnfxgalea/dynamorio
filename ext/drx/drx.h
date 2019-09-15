@@ -388,7 +388,7 @@ DR_EXPORT
 void
 drx_buf_insert_update_buf_ptr(void *drcontext, drx_buf_t *buf, instrlist_t *ilist,
                               instr_t *where, reg_id_t buf_ptr, reg_id_t scratch,
-                              ushort stride, bool check_flags);
+                              ushort stride);
 
 DR_EXPORT
 /**

@@ -1003,9 +1003,6 @@ is_couldbelinking(dcontext_t *dcontext);
 bool
 enter_nolinking(dcontext_t *dcontext, fragment_t *watch, bool temporary);
 
-bool
-dr_fragment_delete_shared(void *tag);
-
 /* Returns false iff watch ends up being deleted */
 bool
 enter_couldbelinking(dcontext_t *dcontext, fragment_t *watch, bool temporary);
