@@ -64,7 +64,7 @@ typedef struct {
 	drbbdup_case_t *cases;
 	bool is_eflag_dead;
 	bool is_xax_dead;
-	drbbdup_manager_options_t manager_opts;
+	bool enable_dynamic_fp;
 } drbbdup_manager_t;
 
 /**
@@ -361,11 +361,11 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 				sizeof(drbbdup_case_t) * opts.fp_settings.dup_limit);
 		DR_ASSERT(opts.functions.create_manager);
 
-		manager->manager_opts.enable_dynamic_fp = true;
+		manager->enable_dynamic_fp = true;
 		manager->default_case.condition_val = 0;
 
 		bool consider = opts.functions.create_manager(manager, drcontext, tag,
-				bb, &(manager->manager_opts),
+				bb, &(manager->enable_dynamic_fp),
 				&(manager->default_case.condition_val),
 				opts.functions.user_data);
 
@@ -413,7 +413,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 #endif
 
 #ifdef ENABLE_STATS
-	if (!manager->manager_opts.enable_dynamic_fp)
+	if (!manager->enable_dynamic_fp)
 		drbbdup_stat_no_fp();
 #endif
 
@@ -786,7 +786,7 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
 	instr_t *done_label = INSTR_CREATE_label(drcontext);
 	opnd_t mask_opnd = opnd_create_reg(DRBBDUP_SCRATCH);
 
-	if (manager->manager_opts.enable_dynamic_fp) {
+	if (manager->enable_dynamic_fp) {
 		if (include_path_gen(manager)) {
 
 			drbbdup_case_t *default_info = &(manager->default_case);

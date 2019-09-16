@@ -44,16 +44,15 @@ typedef enum {
 /**
  * TODO
  */
-typedef struct {
-    bool enable_dynamic_fp;
-} drbbdup_manager_options_t;
+typedef bool (*drbbdup_create_default_manager_t)(void *drbbdup_ctx,
+        void *drcontext, void *tag, instrlist_t *bb, bool *enable_dynamic_fp,
+        uint *default_case_value, void *user_data);
 
 /**
  * TODO
  */
-typedef bool (*drbbdup_create_default_manager_t)(void *drbbdup_ctx,
-        void *drcontext, void *tag, instrlist_t *bb, drbbdup_manager_options_t *options,
-        uint *default_case_value, void *user_data);
+typedef bool (*drbbdup_allow_generation)(void *drbbdup_ctx, void *drcontext,
+		void *tag, uint dynamic_case, bool *enable_dynamic_fp, void *user_data);
 
 /**
  * TODO
@@ -116,6 +115,7 @@ typedef struct {
     drbbdup_instrument_bb_t instrument_bb;
     drbbdup_nan_instrument_bb_t nan_instrument_bb;
     drbbdup_get_comparator_t get_comparator;
+	drbbdup_allow_generation allow_generation;
     void *user_data;
 } drbbdup_options_t;
 
