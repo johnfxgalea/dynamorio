@@ -132,8 +132,6 @@ static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
 		instr_t *where, int case_index);
 static void drbbdup_stat_clean_bail_entry(void *drcontext, instrlist_t *bb,
 		instr_t *where);
-static void drbbdup_stat_popcnt_entry(void *drcontext, instrlist_t *bb,
-		instr_t *where);
 static void drbbdup_stat_clean_bb_exec(void *drcontext, instrlist_t *bb,
 		instr_t *where);
 static void drbbdup_stat_print_stats();
@@ -157,9 +155,6 @@ static unsigned long gen_num = 0;
 
 /** Number of bails to slow path**/
 static unsigned long total_bails = 0;
-
-/** Number of popcnt fails to slow path**/
-static unsigned long total_popcnt = 0;
 
 /** Number of case entries **/
 static unsigned long *case_num = NULL;
@@ -367,8 +362,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 		DR_ASSERT(opts.functions.create_manager);
 
 		manager->manager_opts.enable_dynamic_fp = true;
-		manager->manager_opts.enable_pop_threshold = false;
-		manager->manager_opts.max_pop_threshold = 0;
 		manager->default_case.condition_val = 0;
 
 		bool consider = opts.functions.create_manager(manager, drcontext, tag,
@@ -810,40 +803,6 @@ static void drbbdup_insert_chain_end(void *drcontext, app_pc translation_pc,
 			instr = INSTR_CREATE_jcc(drcontext, OP_jz,
 					opnd_create_instr(done_label));
 			instrlist_meta_preinsert(bb, where, instr);
-
-			if (manager->manager_opts.enable_pop_threshold) {
-
-				instr = INSTR_CREATE_popcnt(drcontext, mask_opnd, mask_opnd);
-				instrlist_meta_preinsert(bb, where, instr);
-
-				opnd = opnd_create_immed_uint(
-						(uintptr_t) manager->manager_opts.max_pop_threshold,
-						OPSZ_PTR);
-				instr = INSTR_CREATE_cmp(drcontext, mask_opnd, opnd);
-				instrlist_meta_preinsert(bb, where, instr);
-
-#ifdef ENABLE_STATS
-
-				instr_t* popcnt_label = INSTR_CREATE_label(drcontext);
-
-				instr = INSTR_CREATE_jcc(drcontext, OP_jle,
-						opnd_create_instr(popcnt_label));
-				instrlist_meta_preinsert(bb, where, instr);
-
-				drbbdup_stat_popcnt_entry(drcontext, bb, where);
-
-				instr = INSTR_CREATE_jmp(drcontext,
-						opnd_create_instr(done_label));
-				instrlist_meta_preinsert(bb, where, instr);
-
-				instrlist_meta_preinsert(bb, where, popcnt_label);
-
-#else
-				instr = INSTR_CREATE_jcc(drcontext, OP_jg,
-						opnd_create_instr(done_label));
-				instrlist_meta_preinsert(bb, where, instr);
-#endif
-			}
 
 			if (opts.fp_settings.hit_threshold > 0) {
 
@@ -1635,20 +1594,6 @@ static void drbbdup_stat_clean_bail_entry(void *drcontext, instrlist_t *bb,
 	dr_insert_clean_call(drcontext, bb, where, clean_call_bail_entry, false, 0);
 }
 
-static void clean_call_popcnt_entry() {
-
-	dr_mutex_lock(stat_mutex);
-	total_popcnt++;
-	dr_mutex_unlock(stat_mutex);
-}
-
-static void drbbdup_stat_popcnt_entry(void *drcontext, instrlist_t *bb,
-		instr_t *where) {
-
-	dr_insert_clean_call(drcontext, bb, where, clean_call_popcnt_entry, false,
-			0);
-}
-
 static void clean_call_bb_execc() {
 
 	dr_mutex_lock(stat_mutex);
@@ -1680,7 +1625,6 @@ static void drbbdup_stat_print_stats() {
 
 	dr_fprintf(time_file, "Total bb exec: %lu\n", total_exec);
 	dr_fprintf(time_file, "Total bails: %lu\n", total_bails);
-	dr_fprintf(time_file, "Total failed popcnt: %lu\n", total_popcnt);
 
 	for (int i = 0; i < opts.fp_settings.dup_limit + 1; i++)
 		dr_fprintf(time_file, "Case %d: %lu\n", i, case_num[i]);
