@@ -276,7 +276,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
 	if (!for_trace)
-		drbbdup_stat_inc_bb();
+	drbbdup_stat_inc_bb();
 #endif
 
 	/* Fetch new case manager */
@@ -414,7 +414,7 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 
 #ifdef ENABLE_STATS
 	if (!manager->enable_dynamic_fp)
-		drbbdup_stat_no_fp();
+	drbbdup_stat_no_fp();
 #endif
 
 	/**
@@ -1121,7 +1121,6 @@ static void drbbdup_handle_new_case() {
 	instrlist_t *ilist = decode_as_bb(drcontext, dr_fragment_app_pc(tag));
 	instr_t *instr = instrlist_first_app(ilist);
 	app_pc bb_pc = instr_get_app_pc(instr);
-	instrlist_clear_and_destroy(drcontext, ilist);
 
 	/* Get the missing case */
 	reg_t conditional_val = (reg_t) drbbdup_get_comparator();
@@ -1135,25 +1134,34 @@ static void drbbdup_handle_new_case() {
 	if (!manager)
 		DR_ASSERT_MSG(false, "Can't find manager!\n");
 
+	/* By default, permit generation */
+	bool allow_generation = true;
+	if (opts.functions.allow_generation != NULL) {
+		allow_generation = opts.functions.allow_generation(manager, drcontext,
+				tag, ilist, conditional_val, &(manager->enable_dynamic_fp),
+				opts.functions.user_data);
+	}
+
 	/* Find an undefined case, and set it up for the new conditional. */
+	if (allow_generation) {
+		int i;
+		for (i = 0; i < opts.fp_settings.dup_limit; i++) {
 
-	/* Check whether the default case is actually the missing case. */
+			if (!(manager->cases[i].is_defined)) {
 
-	int i;
-	for (i = 0; i < opts.fp_settings.dup_limit; i++) {
-
-		if (!(manager->cases[i].is_defined)) {
-
-			manager->cases[i].is_defined = true;
-			manager->cases[i].condition_val =
-					(unsigned int) (uintptr_t) conditional_val;
-			break;
+				manager->cases[i].is_defined = true;
+				manager->cases[i].condition_val =
+						(unsigned int) (uintptr_t) conditional_val;
+				break;
+			}
 		}
 	}
 
 	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
 
 	dr_rwlock_write_unlock(rw_lock);
+
+	instrlist_clear_and_destroy(drcontext, ilist);
 
 	/* Refresh hit counter*/
 	drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
@@ -1173,7 +1181,6 @@ static void drbbdup_handle_new_case() {
 
 	dr_redirect_execution(&mcontext);
 }
-
 
 static app_pc init_fp_cache(void (*clean_call_func)()) {
 
@@ -1202,8 +1209,11 @@ static app_pc init_fp_cache(void (*clean_call_func)()) {
 
 	DR_ASSERT(end - cache_pc <= (int ) size);
 
-// Change the permission Read-Write-Execute permissions.
-// In particular, we do not need to write the the private cache
+	/**
+	 * Change the permission Read-Write-Execute permissions.
+	 * In particular, we do not need to write the the private cache
+	 */
+
 	dr_memory_protect(cache_pc, size, DR_MEMPROT_READ | DR_MEMPROT_EXEC);
 
 	return cache_pc;
@@ -1255,6 +1265,8 @@ static void destroy_fp_cache(app_pc cache_pc) {
 
 DR_EXPORT drbbdup_status_t drbbdup_register_case_value(void *drbbdup_ctx,
 		uint case_val) {
+
+	/* TODO use recursive lock */
 
 	drbbdup_manager_t *manager = (drbbdup_manager_t *) drbbdup_ctx;
 
@@ -1578,7 +1590,7 @@ static void drbbdup_stat_clean_case_entry(void *drcontext, instrlist_t *bb,
 		instr_t *where, int case_index) {
 
 	dr_insert_clean_call(drcontext, bb, where, clean_call_case_entry, false, 1,
-	OPND_CREATE_INTPTR(case_index));
+			OPND_CREATE_INTPTR(case_index));
 }
 
 static void clean_call_bail_entry() {
@@ -1617,8 +1629,8 @@ static void drbbdup_stat_print_stats() {
 	dr_fprintf(time_file, "Number of BB instrumented: %lu\n", bb_instrumented);
 
 	if (bb_instrumented != 0)
-		dr_fprintf(time_file, "Avg BB size: %lu\n\n",
-				total_size / bb_instrumented);
+	dr_fprintf(time_file, "Avg BB size: %lu\n\n",
+			total_size / bb_instrumented);
 
 	dr_fprintf(time_file, "Number of fast paths generated (bb): %lu\n",
 			gen_num);
@@ -1627,7 +1639,7 @@ static void drbbdup_stat_print_stats() {
 	dr_fprintf(time_file, "Total bails: %lu\n", total_bails);
 
 	for (int i = 0; i < opts.fp_settings.dup_limit + 1; i++)
-		dr_fprintf(time_file, "Case %d: %lu\n", i, case_num[i]);
+	dr_fprintf(time_file, "Case %d: %lu\n", i, case_num[i]);
 
 	dr_fprintf(time_file, "---------------------------\n");
 
@@ -1641,14 +1653,14 @@ void record_sample(void *drcontext, dr_mcontext_t *mcontext) {
 
 	unsigned long new_fp_taint_num = 0;
 	for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
-		new_fp_taint_num += case_num[i];
+	new_fp_taint_num += case_num[i];
 
 	new_fp_taint_num = new_fp_taint_num - prev_full_taint_num;
 	unsigned long new_fp_gen = gen_num - prev_fp_gen;
 
 	prev_full_taint_num = 0;
 	for (int i = 2; i < opts.fp_settings.dup_limit + 1; i++)
-		prev_full_taint_num += case_num[i];
+	prev_full_taint_num += case_num[i];
 
 	prev_fp_gen = gen_num;
 
