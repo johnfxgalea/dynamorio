@@ -30,7 +30,7 @@
 
 /* Definitions for our hit table */
 #define HASH_BIT_TABLE 13
-#define TABLE_SIZE 32768
+#define TABLE_SIZE 65536
 
 /* THREAD SLOTS */
 #define DRBBDUP_COMPARATOR_SLOT 0
@@ -43,7 +43,6 @@
 /* TODO Provide struct  and make this a compile time option*/
 // Comment out macro for no stats
 //#define ENABLE_STATS 1
-
 /*************************************************************************
  * Structs
  */
