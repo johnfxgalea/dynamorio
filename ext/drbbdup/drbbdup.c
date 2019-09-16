@@ -28,6 +28,7 @@
 #    define LOG(dc, mask, level, ...) /* nothing */
 #endif
 
+/* Definitions for our hit table */
 #define HASH_BIT_TABLE 13
 #define TABLE_SIZE 32768
 
@@ -39,6 +40,7 @@
 
 #define DRBBDUP_SCRATCH DR_REG_XAX
 
+/* TODO Provide struct  and make this a compile time option*/
 // Comment out macro for no stats
 //#define ENABLE_STATS 1
 
@@ -287,11 +289,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
 			&case_manager_table, pc);
 
-	if (manager != NULL) {
-		dr_rwlock_write_unlock(rw_lock);
-		return DR_EMIT_DEFAULT;
-	}
-
 	/* If the first instruction is a branch statement, we simply return.
 	 * We do not duplicate cti instructions because we need to abide by bb rules -
 	 * only one exit.
@@ -331,10 +328,6 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 		/** Too small. **/
 		return DR_EMIT_DEFAULT;
 	}
-
-#ifdef ENABLE_STATS
-	drbbdup_stat_inc_bb_size(bb_size);
-#endif
 
 	/* Example:
 	 *
@@ -417,6 +410,10 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 	}
 
 	DR_ASSERT(manager != NULL);
+
+#ifdef ENABLE_STATS
+	drbbdup_stat_inc_bb_size(bb_size);
+#endif
 
 #ifdef ENABLE_STATS
 	drbbdup_stat_inc_instrum_bb();
