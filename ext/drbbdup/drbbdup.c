@@ -43,6 +43,7 @@
 /* TODO Provide struct  and make this a compile time option*/
 // Comment out macro for no stats
 //#define ENABLE_STATS 1
+
 /*************************************************************************
  * Structs
  */
@@ -1105,10 +1106,6 @@ static void drbbdup_prepare_redirect(dr_mcontext_t *mcontext,
 
 static void drbbdup_handle_new_case() {
 
-#ifdef ENABLE_STATS
-	drbbdup_stat_inc_gen();
-#endif
-
 	void *drcontext = dr_get_current_drcontext();
 
 	/* Must use DR_MC_ALL due to dr_redirect_execution */
@@ -1143,6 +1140,10 @@ static void drbbdup_handle_new_case() {
 
 	/* Find an undefined case, and set it up for the new conditional. */
 	if (allow_generation) {
+
+#ifdef ENABLE_STATS
+        drbbdup_stat_inc_gen();
+#endif
 		int i;
 		for (i = 0; i < opts.fp_settings.dup_limit; i++) {
 
