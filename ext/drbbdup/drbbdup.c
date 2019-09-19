@@ -43,7 +43,6 @@
 /* TODO Provide struct  and make this a compile time option*/
 // Comment out macro for no stats
 //#define ENABLE_STATS 1
-
 /*************************************************************************
  * Structs
  */
@@ -60,6 +59,7 @@ typedef struct {
 
 typedef struct {
 	int ref_counter;
+	bool is_fp;
 	drbbdup_case_t default_case;
 	drbbdup_case_t *cases;
 	bool is_eflag_dead;
@@ -384,8 +384,18 @@ static dr_emit_flags_t drbbdup_duplicate_phase(void *drcontext, void *tag,
 			return DR_EMIT_DEFAULT;
 		}
 
+		manager->ref_counter = 1;
+		manager->is_fp = false;
 		manager->default_case.is_defined = true;
 		hashtable_add(&case_manager_table, pc, manager);
+	} else {
+		if (manager->is_fp) {
+			manager->is_fp = false;
+		} else {
+			manager->ref_counter++;
+
+		}
+
 	}
 
 	/* We create a duplication here to keep track of original bb */
@@ -1130,8 +1140,7 @@ static void drbbdup_handle_new_case() {
 	if (!manager)
 		DR_ASSERT_MSG(false, "Can't find manager!\n");
 
-	if (conditional_val == manager->default_case.condition_val)
-	{
+	if (conditional_val == manager->default_case.condition_val) {
 		DR_ASSERT_MSG(false, "Conditional val doesnt match!\n");
 
 	}
@@ -1144,26 +1153,39 @@ static void drbbdup_handle_new_case() {
 				opts.functions.user_data);
 	}
 
+	bool found = false;
 	/* Find an undefined case, and set it up for the new conditional. */
 	if (allow_generation) {
 
 #ifdef ENABLE_STATS
-        drbbdup_stat_inc_gen();
+		drbbdup_stat_inc_gen();
 #endif
 		int i;
 		for (i = 0; i < opts.fp_settings.dup_limit; i++) {
 
-			if (!(manager->cases[i].is_defined)) {
+			if (!found && manager->cases[i].is_defined
+					&& manager->cases[i].condition_val == conditional_val) {
+
+				/* Already present by other thread */
+				break;
+			}
+
+			if (!(manager->cases[i].is_defined) && !found) {
 
 				manager->cases[i].is_defined = true;
 				manager->cases[i].condition_val =
 						(unsigned int) (uintptr_t) conditional_val;
-				break;
+				found = true;
 			}
 		}
 	}
 
 	drbbdup_prepare_redirect(&mcontext, manager, bb_pc);
+
+	if ((allow_generation && found) || !allow_generation) {
+		manager->is_fp = true;
+		manager->ref_counter++;
+	}
 
 	dr_rwlock_write_unlock(rw_lock);
 
@@ -1182,8 +1204,10 @@ static void drbbdup_handle_new_case() {
 	LOG(drcontext, DR_LOG_ALL, 2, "%s Found new taint case! I am about to flush for %p\n",
 			__FUNCTION__, bb_pc);
 
-	bool succ = dr_delete_shared_fragment(tag);
-	DR_ASSERT(succ);
+	if ((allow_generation && found) || !allow_generation) {
+		bool succ = dr_delete_shared_fragment(tag);
+		DR_ASSERT(succ);
+	}
 
 	dr_redirect_execution(&mcontext);
 }
@@ -1230,40 +1254,31 @@ static void destroy_fp_cache(app_pc cache_pc) {
 	dr_nonheap_free(cache_pc, dr_page_size());
 }
 
-///******************************************************************
-// * Frag Deletion
-// */
-//
-//static void deleted_frag(void *drcontext, void *tag) {
-//
-//    if (drcontext == NULL)
-//        return;
-//
-//    drbbdup_per_thread *pt = (drbbdup_per_thread *) drmgr_get_tls_field(
-//            drcontext, tls_idx);
-//
-//    app_pc bb_pc = dr_fragment_app_pc(tag);
-//
-//    drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
-//            &(pt->case_manager_table), bb_pc);
-//
-//    if (manager) {
-//
-//        dr_fprintf(STDERR, "Found in removal %p\n", bb_pc);
-//
-////
-////        DR_ASSERT(manager->ref_counter > 0);
-////        manager->ref_counter--;
-////
-////        if (manager->ref_counter <= 0) {
-////            dr_fprintf(STDERR, "Removing %p %d\n", bb_pc, manager->fp_flag);
-////
-////            bool is_removed = hashtable_remove(&(pt->case_manager_table),
-////                    bb_pc);
-////            DR_ASSERT(is_removed);
-////        }
-//    }
-//}
+/******************************************************************
+ * Frag Deletion
+ */
+
+static void deleted_frag(void *drcontext, void *tag) {
+
+	if (drcontext == NULL)
+		return;
+
+	app_pc bb_pc = dr_fragment_app_pc(tag);
+
+	drbbdup_manager_t *manager = (drbbdup_manager_t *) hashtable_lookup(
+			&(case_manager_table), bb_pc);
+
+	if (manager) {
+
+		DR_ASSERT(manager->ref_counter > 0);
+		manager->ref_counter--;
+
+		if (manager->ref_counter <= 0) {
+			bool is_removed = hashtable_remove(&(case_manager_table), bb_pc);
+			DR_ASSERT(is_removed);
+		}
+	}
+}
 
 /************************************************************************
  * INIT
@@ -1408,7 +1423,7 @@ DR_EXPORT drbbdup_status_t drbbdup_init_ex(drbbdup_options_t *ops_in,
 				|| !drmgr_register_thread_exit_event(drbbdup_thread_exit))
 			return DRBBDUP_ERROR;
 
-//        dr_register_delete_event(deleted_frag);
+		dr_register_delete_event(deleted_frag);
 
 		tls_idx = drmgr_register_tls_field();
 		if (tls_idx == -1)
@@ -1509,7 +1524,7 @@ DR_EXPORT drbbdup_status_t drbbdup_exit(void) {
 
 		dr_raw_tls_cfree(tls_raw_base, 4);
 		drmgr_unregister_tls_field(tls_idx);
-//        dr_unregister_delete_event(deleted_frag);
+		dr_unregister_delete_event(deleted_frag);
 		drreg_exit();
 
 		hashtable_delete(&case_manager_table);
