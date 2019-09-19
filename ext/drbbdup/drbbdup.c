@@ -1130,6 +1130,12 @@ static void drbbdup_handle_new_case() {
 	if (!manager)
 		DR_ASSERT_MSG(false, "Can't find manager!\n");
 
+	if (conditional_val == manager->default_case.condition_val)
+	{
+		DR_ASSERT_MSG(false, "Conditional val doesnt match!\n");
+
+	}
+
 	/* By default, permit generation */
 	bool allow_generation = true;
 	if (opts.functions.allow_generation != NULL) {
