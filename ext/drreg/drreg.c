@@ -941,7 +941,6 @@ drreg_forward_analysis(void *drcontext, instr_t *start)
     for (reg = DR_REG_START_GPR; reg <= DR_REG_STOP_GPR; reg++) {
         pt->reg[GPR_IDX(reg)].app_uses = 0;
         drvector_set_entry(&pt->reg[GPR_IDX(reg)].live, 0, REG_UNKNOWN);
-        pt->reg[GPR_IDX(reg)].ever_spilled = false;
     }
     for (reg = DR_REG_START_XMM; reg <= DR_REG_APPLICABLE_STOP_XMM; reg++) {
         pt->xmm_reg[XMM_IDX(reg)].app_uses = 0;
@@ -1306,6 +1305,7 @@ drreg_reserve_register(void *drcontext, instrlist_t *ilist, instr_t *where,
         if (res != DRREG_SUCCESS)
             return res;
     }
+    /* FIXME i#3827: ever_spilled is not being reset. */
     /* XXX i#2585: drreg should predicate spills and restores as appropriate */
     instrlist_set_auto_predicate(ilist, DR_PRED_NONE);
     res =
@@ -1579,14 +1579,13 @@ drreg_statelessly_restore_app_value(void *drcontext, instrlist_t *ilist, reg_id_
                                     instr_t *where_restore, instr_t *where_respill,
                                     bool *restore_needed OUT, bool *respill_needed OUT)
 {
-    bool spill_flags = reg == DR_REG_NULL;
     per_thread_t *pt = get_tls_data(drcontext);
     drreg_status_t res;
     LOG(drcontext, DR_LOG_ALL, 3, "%s @%d." PFX " %s\n", __FUNCTION__, pt->live_idx,
         get_where_app_pc(where_restore), get_register_name(reg));
     if (where_restore == NULL || where_respill == NULL)
         return DRREG_ERROR_INVALID_PARAMETER;
-    if (spill_flags) {
+    if (reg == DR_REG_NULL) {
         res = drreg_restore_aflags(drcontext, ilist, where_restore, pt, false);
     } else {
         if ((!is_applicable_xmm(reg) && !reg_is_pointer_sized(reg)) ||
@@ -1601,8 +1600,8 @@ drreg_statelessly_restore_app_value(void *drcontext, instrlist_t *ilist, reg_id_
         /* XXX i#511: if we add .xchg support for GPR's we'll need to check them all here.
          */
 #ifdef X86
-    /* ATTENTION DR_BUG WAS HERE!!!! DUE TO CONFUSION WITH NULL! */
-    if (!spill_flags  && pt->aflags.xchg == reg) {
+    if (reg != DR_REG_NULL && pt->aflags.xchg == reg) {
+
         pt->slot_use[AFLAGS_SLOT] = DR_REG_XAX; /* appease assert */
         restore_reg(drcontext, pt, DR_REG_XAX, AFLAGS_SLOT, ilist, where_respill, false);
         pt->slot_use[AFLAGS_SLOT] = DR_REG_NULL;

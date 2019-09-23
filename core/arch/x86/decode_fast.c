@@ -556,13 +556,6 @@ decode_sizeof(dcontext_t *dcontext, byte *start_pc,
                         opc = (uint) * (++pc); /* 3rd vex prefix byte */
                         sz += 1;
                     } else if (evex_prefix) {
-                        /* XXX i#1312: EVEX prefix always implies a leading 0x0f opcode
-                         * and as such, while this will return the instruction's length,
-                         * will still not be supported e.g. in decode_cti, because neither
-                         * are there sizeof tables supporting prefix + > 1 opcode
-                         * instructions, nor do we support full decode of EVEX
-                         * instructions yet.
-                         */
                         vex_mm = (byte)(opc & 0x3);
                         opc = (uint) * (++pc); /* 3rd evex prefix byte */
                         sz += 1;
@@ -1260,25 +1253,24 @@ intercept_fip_save(byte *pc, byte byte0, byte byte1)
     return false;
 }
 
-static void
-get_implied_mm_vex_opcode_bytes(byte *pc, int prefixes, byte vex_mm, byte *byte0,
-                                byte *byte1)
+static bool
+get_implied_mm_e_vex_opcode_bytes(byte *pc, int prefixes, byte vex_mm, byte *byte0,
+                                  byte *byte1)
 {
     switch (vex_mm) {
     case 1:
         *byte0 = 0x0f;
         *byte1 = *(pc + prefixes);
-        break;
+        return true;
     case 2:
         *byte0 = 0x0f;
         *byte1 = 0x38;
-        break;
+        return true;
     case 3:
         *byte0 = 0x0f;
         *byte1 = 0x3a;
-        break;
-    default:
-        CLIENT_ASSERT(false, "get_implied_mm_vex_opcode_bytes: internal prefix error");
+        return true;
+    default: return false;
     }
 }
 
@@ -1353,13 +1345,20 @@ decode_cti(dcontext_t *dcontext, byte *pc, instr_t *instr)
                 byte1 = *(pc + prefixes);
                 break;
             case EVEX_PREFIX_OPCODE:
+                instr_set_prefix_flag(instr, PREFIX_EVEX);
+                /* fall-through */
             case VEX_3BYTE_PREFIX_OPCODE: {
                 /* EVEX and VEX 3-byte prefixes imply instruction opcodes by encoding mm
                  * bits in the second prefix byte. In theory, there are 5 VEX mm bits, but
                  * only 2 of them are used.
                  */
                 byte vex_mm = (byte)(*(pc + 1) & 0x3);
-                get_implied_mm_vex_opcode_bytes(pc, prefixes, vex_mm, &byte0, &byte1);
+                if (!get_implied_mm_e_vex_opcode_bytes(pc, prefixes, vex_mm, &byte0,
+                                                       &byte1)) {
+                    /* invalid instruction! */
+                    instr_set_opcode(instr, OP_INVALID);
+                    return NULL;
+                }
                 break;
             }
             default: break;

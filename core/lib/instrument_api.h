@@ -4771,8 +4771,8 @@ DR_API
  *   been translated and so may contain raw code cache values.  The function
  *   will be called from a signal handler that may have interrupted a
  *   lock holder or other critical code, so it must be careful in its
- *   operations: keep it as simple as possible, and avoid lock usage or
- *   I/O operations. If a general timer that does not interrupt client code
+ *   operations: keep it as simple as possible, and avoid any non-reentrant actions
+ *   such as lock usage. If a general timer that does not interrupt client code
  *   is required, the client should create a separate thread via
  *   dr_create_client_thread() (which is guaranteed to have a private
  *   itimer) and set the itimer there, where the callback function can
@@ -5576,14 +5576,26 @@ dr_clobber_retaddr_after_read(void *drcontext, instrlist_t *ilist, instr_t *inst
 
 DR_API
 /**
- * Returns true if the xmm fields in dr_mcontext_t are valid
+ * Returns true if the simd fields in dr_mcontext_t are valid xmm, ymm, or zmm values
  * (i.e., whether the underlying processor supports SSE).
  * \note If #DR_MC_MULTIMEDIA is not specified when calling dr_get_mcontext(),
- * the xmm fields will not be filled in regardless of the return value
+ * the simd fields will not be filled in regardless of the return value
  * of this routine.
  */
 bool
 dr_mcontext_xmm_fields_valid(void);
+
+DR_API
+/**
+ * Returns true if the simd fields in dr_mcontext_t are valid zmm values
+ * (i.e., whether the underlying processor and OS support AVX-512 and AVX-512 code
+ * is present).
+ * \note If #DR_MC_MULTIMEDIA is not specified when calling dr_get_mcontext(),
+ * the simd fields will not be filled in regardless of the return value
+ * of this routine.
+ */
+bool
+dr_mcontext_zmm_fields_valid(void);
 
 #endif /* CLIENT_INTERFACE */
 /* dr_get_mcontext() needed for translating clean call arg errors */

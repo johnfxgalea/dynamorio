@@ -336,7 +336,19 @@ reg_is_gpr(reg_id_t reg)
 }
 
 bool
+reg_is_simd(reg_id_t reg)
+{
+    return (DR_REG_Q0 <= reg && reg <= DR_REG_B31);
+}
+
+bool
 reg_is_opmask(reg_id_t reg)
+{
+    return false;
+}
+
+bool
+reg_is_bnd(reg_id_t reg)
 {
     return false;
 }
@@ -443,5 +455,23 @@ instr_is_exclusive_store(instr_t *instr)
     case OP_stxrb:
     case OP_stxrh: return true;
     }
+    return false;
+}
+
+DR_API
+bool
+instr_is_scatter(instr_t *instr)
+{
+    /* FIXME i#3837: add support. */
+    ASSERT_NOT_IMPLEMENTED(false);
+    return false;
+}
+
+DR_API
+bool
+instr_is_gather(instr_t *instr)
+{
+    /* FIXME i#3837: add support. */
+    ASSERT_NOT_IMPLEMENTED(false);
     return false;
 }

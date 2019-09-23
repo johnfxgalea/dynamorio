@@ -311,7 +311,7 @@ ASSUME fs:_DATA @N@\
 #  define REG_R14 r14
 #  define REG_R15 r15
 #  define SEG_TLS gs /* keep in sync w/ {unix,win32}/os_exports.h defines */
-#  ifdef UNIX
+#  if defined(UNIX) && !defined(MACOS)
 #   define LIB_SEG_TLS fs /* keep in sync w/ unix/os_exports.h defines */
 #  endif
 # else /* 32-bit */
@@ -328,6 +328,8 @@ ASSUME fs:_DATA @N@\
 #   define LIB_SEG_TLS gs /* keep in sync w/ unix/os_exports.h defines */
 #  endif
 # endif /* 64/32-bit */
+#  define REG_ZMM0 zmm0
+#  define REG_ZMM1 zmm1
 #endif /* ARM/X86 */
 
 /* calling convention */

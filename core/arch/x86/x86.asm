@@ -55,6 +55,10 @@
  * it is passed in memory, but we have to pick registers that don't already
  * hold other arguments.  Typically, use this order:
  *   REG_XAX, REG_XBX, REG_XDI, REG_XSI, REG_XDX, REG_XCX
+ * The suggested order for 3 parameters is:
+ *   REG_XAX = ARG1, REG_XCX = ARG3, REG_XDX = ARG2
+ * The suggested order for 2 parameters is:
+ *   REG_XAX = ARG2, REG_XDX = ARG1
  * Note that REG_XBX is by convention used on linux for PIC base: if we want
  * to try and avoid relocations (case 7852) we should avoid using it
  * to avoid confusion (though we can always pick a different register,
@@ -117,7 +121,7 @@ START_FILE
 /* Pushes a priv_mcontext_t on the stack, with an xsp value equal to the
  * xsp before the pushing.  Clobbers xax!
  * Does fill in xmm0-5, if necessary, for PR 264138.
- * Assumes that DR has been initialized (get_xmm_vals() checks proc feature bits).
+ * Assumes that DR has been initialized (get_simd_vals() checks proc feature bits).
  * Caller should ensure 16-byte stack alignment prior to the push (PR 306421).
  */
 #define PUSH_PRIV_MCXT(pc)                              \
@@ -126,7 +130,7 @@ START_FILE
         PUSHF                                          @N@\
         PUSHGPR                                        @N@\
         lea      REG_XAX, [REG_XSP]                    @N@\
-        CALLC1(GLOBAL_REF(get_xmm_vals), REG_XAX)      @N@\
+        CALLC1(GLOBAL_REF(get_simd_vals), REG_XAX)      @N@\
         lea      REG_XAX, [PRIV_MCXT_SIZE + REG_XSP]   @N@\
         mov      [PUSHGPR_XSP_OFFS + REG_XSP], REG_XAX
 
@@ -144,7 +148,7 @@ START_FILE
 DECL_EXTERN(unexpected_return)
 
 DECL_EXTERN(get_own_context_integer_control)
-DECL_EXTERN(get_xmm_vals)
+DECL_EXTERN(get_simd_vals)
 DECL_EXTERN(auto_setup)
 DECL_EXTERN(return_from_native)
 DECL_EXTERN(native_module_callout)
@@ -1210,7 +1214,11 @@ GLOBAL_LABEL(xfer_to_new_libdr:)
         DECLARE_FUNC(dynamorio_sigreturn)
 GLOBAL_LABEL(dynamorio_sigreturn:)
 #ifdef X64
+# ifdef MACOS
+        mov      eax, HEX(20000b8)
+# else
         mov      eax, HEX(f)
+# endif
         mov      r10, rcx
         syscall
 #else
@@ -1430,11 +1438,23 @@ GLOBAL_LABEL(master_signal_handler:)
 #ifdef X64
 # ifdef LINUX
         mov      ARG4, REG_XSP /* pass as extra arg */
-# else
-        mov      ARG6, REG_XSP /* pass as extra arg */
-# endif
         jmp      GLOBAL_REF(master_signal_handler_C)
         /* master_signal_handler_C will do the ret */
+# else /* MACOS */
+        mov      rax, REG_XSP /* save for extra arg */
+        push     ARG2 /* infostyle */
+        push     ARG5 /* ucxt */
+        push     ARG6 /* token */
+        /* rsp is now aligned again */
+        mov      ARG6, rax /* pass as extra arg */
+        CALLC0(GLOBAL_REF(master_signal_handler_C))
+        /* Set up args to SYS_sigreturn */
+        pop      ARG3 /* token */
+        pop      ARG1 /* ucxt */
+        pop      ARG2 /* infostyle */
+        CALLC0(GLOBAL_REF(dynamorio_sigreturn))
+        jmp      GLOBAL_REF(unexpected_return)
+# endif
 #else
         /* We need to pass in xsp.  The easiest way is to create an
          * intermediate frame.
@@ -1813,8 +1833,8 @@ GLOBAL_LABEL(dr_setjmp:)
  */
         DECLARE_FUNC(dr_longjmp)
 GLOBAL_LABEL(dr_longjmp:)
-        mov      REG_XDX, ARG1
         mov      REG_XAX, ARG2
+        mov      REG_XDX, ARG1
 
         mov      REG_XBX, [       0 + REG_XDX]
         mov      REG_XDI, [2*ARG_SZ + REG_XDX]
@@ -1884,8 +1904,11 @@ GLOBAL_LABEL(cpuid_supported:)
         DECLARE_FUNC(our_cpuid)
 GLOBAL_LABEL(our_cpuid:)
         mov      REG_XAX, ARG1
-        mov      REG_XDX, ARG2
+        /* We're clobbering REG_XCX before REG_XDX, because ARG3 is REG_XDX in
+         * UNIX 64-bit mode.
+         */
         mov      REG_XCX, ARG3
+        mov      REG_XDX, ARG2
         push     REG_XBX /* callee-saved */
         push     REG_XDI /* callee-saved */
         /* not making a call so don't bother w/ 16-byte stack alignment */
@@ -2365,10 +2388,7 @@ GLOBAL_LABEL(get_zmm_caller_saved:)
 /* void get_opmask_caller_saved(byte *opmask_caller_saved_buf)
  *   stores the values of k0 through k7 consecutively in 8 byte slots each into
  *   opmask_caller_saved_buf. opmask_caller_saved_buf need not be 8-byte aligned.
- *   The caller must ensure that the underlying processor supports AVX-512!
- *   XXX i#1312: Eventually this routine must dynamically switch the instructions
- *   used dependent on whether AVX512BW is enabled or not (2 bytes vs. 8 bytes
- *   OpMask registers).
+ *   The caller must ensure that the underlying processor supports AVX-512.
  */
         DECLARE_FUNC(get_opmask_caller_saved)
 GLOBAL_LABEL(get_opmask_caller_saved:)

@@ -1120,6 +1120,10 @@ test_hint_nops(void *dc)
     /* other types of hintable nop [eax] */
     buf[2] = 0x00;
     for (buf[1] = 0x19; buf[1] <= 0x1f; buf[1]++) {
+        /* Intel is using these encodings now for the MPX instructions bndldx and bndstx.
+         */
+        if (buf[1] == 0x1a || buf[1] == 0x1b)
+            continue;
         pc = decode(dc, buf, instr);
         ASSERT(instr_get_opcode(instr) == OP_nop_modrm);
         instr_reset(dc, instr);
@@ -1380,18 +1384,29 @@ test_strict_invalid(void *dc)
 {
     instr_t instr;
     byte *pc;
-    const byte buf[] = { 0xf2, 0x0f, 0xd8, 0xe9 }; /* psubusb w/ invalid prefix */
+    const byte buf1[] = { 0xf2, 0x0f, 0xd8, 0xe9 }; /* psubusb w/ invalid prefix */
+    const byte buf2[] = { 0xc5, 0x84, 0x41, 0xd0 }; /* kandw k0, (invalid), k2 */
 
     instr_init(dc, &instr);
 
     /* The instr should be valid by default and invalid if decode_strict */
-    pc = decode(dc, (byte *)buf, &instr);
+    pc = decode(dc, (byte *)buf1, &instr);
     ASSERT(pc != NULL);
 
     disassemble_set_syntax(DR_DISASM_STRICT_INVALID);
     instr_reset(dc, &instr);
-    pc = decode(dc, (byte *)buf, &instr);
+    pc = decode(dc, (byte *)buf1, &instr);
     ASSERT(pc == NULL);
+
+#ifdef X64
+    /* The instruction should always be invalid. In 32-bit mode, the instruction will
+     * decode as lds, because the very bits[7:6] of the second byte of the 2-byte VEX
+     * form are used to differentiate lds from the VEX prefix 0xc5.
+     */
+    instr_reset(dc, &instr);
+    pc = decode(dc, (byte *)buf2, &instr);
+    ASSERT(pc == NULL);
+#endif
 
     instr_free(dc, &instr);
 }
@@ -1439,8 +1454,9 @@ test_tsx(void *dc)
 }
 
 static void
-test_vsib_helper(void *dc, dr_mcontext_t *mc, instr_t *instr, reg_t base, int mask_idx,
-                 int index_idx, int scale, int disp, int count, opnd_size_t index_sz)
+test_vsib_helper(void *dc, dr_mcontext_t *mc, instr_t *instr, reg_t base, int index_idx,
+                 int scale, int disp, int count, opnd_size_t index_sz, bool is_evex,
+                 bool expect_write)
 {
     uint memopidx, memoppos;
     app_pc addr;
@@ -1462,8 +1478,9 @@ test_vsib_helper(void *dc, dr_mcontext_t *mc, instr_t *instr, reg_t base, int ma
                                    mc->simd[index_idx].u32[memopidx * 2])
 #endif
             );
-        ASSERT(!write);
-        ASSERT(memoppos == 0);
+        ASSERT(write == expect_write);
+        ASSERT((is_evex && !write && memoppos == 1) ||
+               (is_evex && write && memoppos == 0) || memoppos == 0);
         ASSERT((ptr_int_t)addr == base + disp + scale * index);
     }
     ASSERT(memopidx == count);
@@ -1497,6 +1514,8 @@ test_vsib(void *dc)
                               false /*no bytes*/, dbuf, BUFFER_SIZE_ELEMENTS(dbuf), &len);
     ASSERT(pc == NULL);
 
+    /* AVX VEX opcodes */
+
     /* Test mem addr emulation */
     mc.size = sizeof(mc);
     mc.flags = DR_MC_ALL;
@@ -1524,7 +1543,8 @@ test_vsib(void *dc)
         dc, opnd_create_reg(DR_REG_XMM0),
         opnd_create_base_disp(DR_REG_XCX, DR_REG_XMM1, 2, 0x12, OPSZ_8),
         opnd_create_reg(DR_REG_XMM2));
-    test_vsib_helper(dc, &mc, instr, mc.xcx, 2, 1, 2, 0x12, 2, OPSZ_4);
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 2, OPSZ_4, false /* !evex */,
+                     false /* !expect_write */);
     instr_destroy(dc, instr);
 
     /* test index size 8 and mem size 4 */
@@ -1532,7 +1552,8 @@ test_vsib(void *dc)
         dc, opnd_create_reg(DR_REG_XMM0),
         opnd_create_base_disp(DR_REG_XCX, DR_REG_XMM1, 2, 0x12, OPSZ_8),
         opnd_create_reg(DR_REG_XMM2));
-    test_vsib_helper(dc, &mc, instr, mc.xcx, 2, 1, 2, 0x12, 2, OPSZ_8);
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 2, OPSZ_8, false /* !evex */,
+                     false /* !expect_write */);
     instr_destroy(dc, instr);
 
     /* test index size 4 and mem size 4 */
@@ -1540,7 +1561,8 @@ test_vsib(void *dc)
         dc, opnd_create_reg(DR_REG_XMM0),
         opnd_create_base_disp(DR_REG_XCX, DR_REG_XMM1, 2, 0x12, OPSZ_4),
         opnd_create_reg(DR_REG_XMM2));
-    test_vsib_helper(dc, &mc, instr, mc.xcx, 2, 1, 2, 0x12, 4, OPSZ_4);
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 4, OPSZ_4, false /* !evex */,
+                     false /* !expect_write */);
     instr_destroy(dc, instr);
 
     /* test index size 8 and mem size 4 */
@@ -1548,7 +1570,8 @@ test_vsib(void *dc)
         dc, opnd_create_reg(DR_REG_XMM0),
         opnd_create_base_disp(DR_REG_XCX, DR_REG_XMM1, 2, 0x12, OPSZ_4),
         opnd_create_reg(DR_REG_XMM2));
-    test_vsib_helper(dc, &mc, instr, mc.xcx, 2, 1, 2, 0x12, 2, OPSZ_8);
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 2, OPSZ_8, false /* !evex */,
+                     false /* !expect_write */);
     instr_destroy(dc, instr);
 
     /* test 256-byte */
@@ -1556,7 +1579,8 @@ test_vsib(void *dc)
         dc, opnd_create_reg(DR_REG_YMM0),
         opnd_create_base_disp(DR_REG_XCX, DR_REG_YMM1, 2, 0x12, OPSZ_4),
         opnd_create_reg(DR_REG_YMM2));
-    test_vsib_helper(dc, &mc, instr, mc.xcx, 2, 1, 2, 0x12, 8, OPSZ_4);
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 8, OPSZ_4, false /* !evex */,
+                     false /* !expect_write */);
     instr_destroy(dc, instr);
 
     /* test mask not selecting things -- in the middle complicates
@@ -1574,8 +1598,164 @@ test_vsib(void *dc)
         dc, opnd_create_reg(DR_REG_YMM0),
         opnd_create_base_disp(DR_REG_XCX, DR_REG_YMM1, 2, 0x12, OPSZ_4),
         opnd_create_reg(DR_REG_YMM2));
-    test_vsib_helper(dc, &mc, instr, mc.xcx, 2, 1, 2, 0x12, 0 /*nothing*/, OPSZ_4);
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 0 /*nothing*/, OPSZ_4,
+                     false /* !evex */, false /* !expect_write */);
     instr_destroy(dc, instr);
+
+    /* AVX-512 EVEX opcodes */
+
+    /* evex mask */
+    mc.opmask[0] = 0xffff;
+
+    /* test index size 4 and mem size 8 */
+    instr = INSTR_CREATE_vgatherdpd_mask(
+        dc, opnd_create_reg(DR_REG_XMM0), opnd_create_reg(DR_REG_K0),
+        opnd_create_base_disp(DR_REG_XCX, DR_REG_XMM1, 2, 0x12, OPSZ_8));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 2, OPSZ_4, true /* evex */,
+                     false /* !expect_write */);
+    instr_destroy(dc, instr);
+
+    instr = INSTR_CREATE_vscatterdpd_mask(
+        dc, opnd_create_base_disp(DR_REG_XCX, DR_REG_XMM1, 2, 0x12, OPSZ_8),
+        opnd_create_reg(DR_REG_K0), opnd_create_reg(DR_REG_XMM0));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 2, OPSZ_4, true /* evex */,
+                     true /* expect_write */);
+    instr_destroy(dc, instr);
+
+    /* test index size 8 and mem size 4 */
+    instr = INSTR_CREATE_vgatherqpd_mask(
+        dc, opnd_create_reg(DR_REG_XMM0), opnd_create_reg(DR_REG_K0),
+        opnd_create_base_disp(DR_REG_XCX, DR_REG_XMM1, 2, 0x12, OPSZ_8));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 2, OPSZ_8, true /* evex */,
+                     false /* !expect_write */);
+    instr_destroy(dc, instr);
+
+    instr = INSTR_CREATE_vscatterqpd_mask(
+        dc, opnd_create_base_disp(DR_REG_XCX, DR_REG_XMM1, 2, 0x12, OPSZ_8),
+        opnd_create_reg(DR_REG_K0), opnd_create_reg(DR_REG_XMM0));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 2, OPSZ_8, true /* evex */,
+                     true /* expect_write */);
+    instr_destroy(dc, instr);
+
+    /* test index size 4 and mem size 4 */
+    instr = INSTR_CREATE_vgatherdps_mask(
+        dc, opnd_create_reg(DR_REG_XMM0), opnd_create_reg(DR_REG_K0),
+        opnd_create_base_disp(DR_REG_XCX, DR_REG_XMM1, 2, 0x12, OPSZ_4));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 4, OPSZ_4, true /* evex */,
+                     false /* !expect_write */);
+    instr_destroy(dc, instr);
+
+    instr = INSTR_CREATE_vscatterdps_mask(
+        dc, opnd_create_base_disp(DR_REG_XCX, DR_REG_XMM1, 2, 0x12, OPSZ_4),
+        opnd_create_reg(DR_REG_K0), opnd_create_reg(DR_REG_XMM0));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 4, OPSZ_4, true /* evex */,
+                     true /* expect_write */);
+    instr_destroy(dc, instr);
+
+    /* test index size 8 and mem size 4 */
+    instr = INSTR_CREATE_vgatherqps_mask(
+        dc, opnd_create_reg(DR_REG_XMM0), opnd_create_reg(DR_REG_K0),
+        opnd_create_base_disp(DR_REG_XCX, DR_REG_XMM1, 2, 0x12, OPSZ_4));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 2, OPSZ_8, true /* evex */,
+                     false /* !expect_write */);
+    instr_destroy(dc, instr);
+
+    instr = INSTR_CREATE_vscatterqps_mask(
+        dc, opnd_create_base_disp(DR_REG_XCX, DR_REG_XMM1, 2, 0x12, OPSZ_4),
+        opnd_create_reg(DR_REG_K0), opnd_create_reg(DR_REG_XMM0));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 2, OPSZ_8, true /* evex */,
+                     true /* expect_write */);
+    instr_destroy(dc, instr);
+
+    /* test 256-bit */
+    instr = INSTR_CREATE_vgatherdps_mask(
+        dc, opnd_create_reg(DR_REG_YMM0), opnd_create_reg(DR_REG_K0),
+        opnd_create_base_disp(DR_REG_XCX, DR_REG_YMM1, 2, 0x12, OPSZ_4));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 8, OPSZ_4, true /* evex */,
+                     false /* !expect_write */);
+    instr_destroy(dc, instr);
+
+    instr = INSTR_CREATE_vscatterdps_mask(
+        dc, opnd_create_base_disp(DR_REG_XCX, DR_REG_YMM1, 2, 0x12, OPSZ_4),
+        opnd_create_reg(DR_REG_K0), opnd_create_reg(DR_REG_YMM0));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 8, OPSZ_4, true /* evex */,
+                     true /* expect_write */);
+    instr_destroy(dc, instr);
+
+    /* test 512-bit */
+    instr = INSTR_CREATE_vgatherdps_mask(
+        dc, opnd_create_reg(DR_REG_ZMM0), opnd_create_reg(DR_REG_K0),
+        opnd_create_base_disp(DR_REG_XCX, DR_REG_ZMM1, 2, 0x12, OPSZ_4));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 16, OPSZ_4, true /* evex */,
+                     false /* !expect_write */);
+    instr_destroy(dc, instr);
+
+    instr = INSTR_CREATE_vscatterdps_mask(
+        dc, opnd_create_base_disp(DR_REG_XCX, DR_REG_ZMM1, 2, 0x12, OPSZ_4),
+        opnd_create_reg(DR_REG_K0), opnd_create_reg(DR_REG_ZMM0));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 16, OPSZ_4, true /* evex */,
+                     true /* expect_write */);
+    instr_destroy(dc, instr);
+
+    /* test mask not selecting things -- in the middle complicates
+     * our helper checks so we just do the ends
+     */
+    mc.opmask[0] = 0x0;
+
+    instr = INSTR_CREATE_vgatherdps_mask(
+        dc, opnd_create_reg(DR_REG_YMM0), opnd_create_reg(DR_REG_K0),
+        opnd_create_base_disp(DR_REG_XCX, DR_REG_YMM1, 2, 0x12, OPSZ_4));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 0 /*nothing*/, OPSZ_4,
+                     true /* evex */, false /* !expect_write */);
+    instr_destroy(dc, instr);
+
+    instr = INSTR_CREATE_vscatterdps_mask(
+        dc, opnd_create_base_disp(DR_REG_XCX, DR_REG_YMM1, 2, 0x12, OPSZ_4),
+        opnd_create_reg(DR_REG_K0), opnd_create_reg(DR_REG_YMM0));
+    test_vsib_helper(dc, &mc, instr, mc.xcx, 1, 2, 0x12, 0 /*nothing*/, OPSZ_4,
+                     true /* evex */, true /* expect_write */);
+    instr_destroy(dc, instr);
+
+    /* Test invalid k0 mask with scatter/gather opcodes. */
+    const byte b_scattergatherinv[] = { /* vpscatterdd %xmm0,(%rax,%xmm1,2){%k0} */
+                                        0x62, 0xf2, 0x7d, 0x08, 0xa0, 0x04, 0x48,
+                                        /* vpscatterdq %xmm0,(%rax,%xmm1,2){%k0} */
+                                        0x62, 0xf2, 0xfd, 0x08, 0xa0, 0x04, 0x48,
+                                        /* vpscatterqd %xmm0,(%rax,%xmm1,2){%k0} */
+                                        0x62, 0xf2, 0x7d, 0x08, 0xa1, 0x04, 0x48,
+                                        /* vpscatterqq %xmm0,(%rax,%xmm1,2){%k0} */
+                                        0x62, 0xf2, 0xfd, 0x08, 0xa1, 0x04, 0x48,
+                                        /* vscatterdps %xmm0,(%rax,%xmm1,2){%k0} */
+                                        0x62, 0xf2, 0x7d, 0x08, 0xa2, 0x04, 0x48,
+                                        /* vscatterdpd %xmm0,(%rax,%xmm1,2){%k0} */
+                                        0x62, 0xf2, 0xfd, 0x08, 0xa2, 0x04, 0x48,
+                                        /* vscatterqps %xmm0,(%rax,%xmm1,2){%k0} */
+                                        0x62, 0xf2, 0x7d, 0x08, 0xa3, 0x04, 0x48,
+                                        /* vscatterqpd %xmm0,(%rax,%xmm1,2){%k0} */
+                                        0x62, 0xf2, 0xfd, 0x08, 0xa3, 0x04, 0x48,
+                                        /* vpgatherdd (%rax,%xmm1,2),%xmm0{%k0} */
+                                        0x62, 0xf2, 0x7d, 0x08, 0x90, 0x04, 0x48,
+                                        /* vpgatherdq (%rax,%xmm1,2),%xmm0{%k0} */
+                                        0x62, 0xf2, 0xfd, 0x08, 0x90, 0x04, 0x48,
+                                        /* vpgatherqd (%rax,%xmm1,2),%xmm0{%k0} */
+                                        0x62, 0xf2, 0x7d, 0x08, 0x91, 0x04, 0x48,
+                                        /* vpgatherqq (%rax,%xmm1,2),%xmm0{%k0} */
+                                        0x62, 0xf2, 0xfd, 0x08, 0x91, 0x04, 0x48,
+                                        /* vgatherdps (%rax,%xmm1,2),%xmm0{%k0} */
+                                        0x62, 0xf2, 0x7d, 0x08, 0x92, 0x04, 0x48,
+                                        /* vgatherdpd (%rax,%xmm1,2),%xmm0{%k0} */
+                                        0x62, 0xf2, 0xfd, 0x08, 0x92, 0x04, 0x48,
+                                        /* vgatherqps (%rax,%xmm1,2),%xmm0{%k0} */
+                                        0x62, 0xf2, 0x7d, 0x08, 0x93, 0x04, 0x48,
+                                        /* vgatherqpd (%rax,%xmm1,2),%xmm0{%k0} */
+                                        0x62, 0xf2, 0xfd, 0x08, 0x93, 0x04, 0x48
+    };
+    instr_t invinstr;
+    instr_init(dc, &invinstr);
+    for (int i = 0; i < sizeof(b_scattergatherinv); i += 7) {
+        pc = decode(dc, (byte *)&b_scattergatherinv[i], &invinstr);
+        ASSERT(pc == NULL);
+    }
 }
 
 static void

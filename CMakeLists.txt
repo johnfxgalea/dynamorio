@@ -611,14 +611,17 @@ else (UNIX)
       set(sdk_bindir "${sdk_dir}/bin")
     endif (X64)
   endif ()
-  find_program(CMAKE_MC_COMPILER mc.exe HINTS "${sdk_bindir}"
-    DOC "path to message compiler")
-  if (NOT CMAKE_MC_COMPILER)
-    message(FATAL_ERROR "message compiler not found: required to build")
-  endif (NOT CMAKE_MC_COMPILER)
-  message(STATUS "Found message compiler: ${CMAKE_MC_COMPILER}")
-  mark_as_advanced(CMAKE_MC_COMPILER)
-
+  if (NOT ("${CMAKE_GENERATOR}" MATCHES "MSYS Makefiles"))
+    # For MinGW (MSYS Makefiles) we do not have a message compiler.
+    # We build without it (which means we can't use the Windows event log).
+    find_program(CMAKE_MC_COMPILER mc.exe HINTS "${sdk_bindir}"
+      DOC "path to message compiler")
+    if (NOT CMAKE_MC_COMPILER)
+      message(FATAL_ERROR "message compiler not found: required to build")
+    endif (NOT CMAKE_MC_COMPILER)
+    message(STATUS "Found message compiler: ${CMAKE_MC_COMPILER}")
+    mark_as_advanced(CMAKE_MC_COMPILER)
+  endif ()
 endif (UNIX)
 
 find_package(Perl)
@@ -754,6 +757,23 @@ if (UNIX)
     if (nounused_avail)
       set(WARN "${WARN} -Wno-unused-but-set-variable")
     endif (nounused_avail)
+    # XXX i#3792: DynamoRIO manages '\0' termination and error states itself in
+    # too many places. In order to activate this warning, this code needs to get
+    # re-factored for no good reason.
+    CHECK_C_COMPILER_FLAG("-Wstringop-truncation" stringop_truncation_avail)
+    if (stringop_truncation_avail)
+      set(WARN "${WARN} -Wno-stringop-truncation")
+    endif (stringop_truncation_avail)
+    # XXX i#3792: see comment above.
+    CHECK_C_COMPILER_FLAG("-Wformat-truncation" format_truncation_avail)
+    if (format_truncation_avail)
+      set(WARN "${WARN} -Wno-format-truncation")
+    endif (format_truncation_avail)
+    # XXX i#3792: see comment above.
+    CHECK_C_COMPILER_FLAG("-Wstringop-overflow" stringop_overflow_avail)
+    if (stringop_overflow_avail)
+      set(WARN "${WARN} -Wno-stringop-overflow")
+    endif (stringop_overflow_avail)
     CHECK_C_COMPILER_FLAG("-Wtype-limits" HAVE_TYPELIMITS_CONTROL)
   else (NOT CMAKE_COMPILER_IS_CLANG)
     # clang turns off color when it's writing to a pipe, but the user may still
@@ -1081,6 +1101,12 @@ if (NOT DISABLE_WARNINGS)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${WARN}")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${WARN}")
 endif (NOT DISABLE_WARNINGS)
+
+if (LINUX)
+  CHECK_INCLUDE_FILE("linux/rseq.h" HAVE_RSEQ)
+else ()
+  set(HAVE_RSEQ OFF)
+endif ()
 
 ###########################################################################
 
@@ -1432,8 +1458,8 @@ if (BUILD_TESTS)
   # Tests require tools
   set(BUILD_TOOLS ON)
   enable_testing()
-  set(proc_supports_avx 0FF)
-  set(proc_supports_avx512 0FF)
+  set(proc_supports_avx OFF)
+  set(proc_supports_avx512 OFF)
   if (UNIX)
     set(CFLAGS_AVX "-mavx")
     set(CFLAGS_AVX512 "-mavx512f")
@@ -1764,6 +1790,8 @@ endif (CLIENT_INTERFACE OR APP_EXPORTS)
 
 ###########################################################################
 # Style checks:
+
+option(VERA_ERROR "Turn vera++ checks into error (default)" ON)
 
 find_package(vera++ QUIET)
 if (vera++_FOUND)

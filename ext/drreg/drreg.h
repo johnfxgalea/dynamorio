@@ -353,6 +353,15 @@ drreg_reserve_register(void *drcontext, instrlist_t *ilist, instr_t *where,
 
 DR_EXPORT
 drreg_status_t
+/**
+ * Requests exclusive use of an XMM application register, spilling the
+ * application value at \p where in \p ilist if necessary.  The
+ * register chosen is returned in \p reg.
+ *
+ * Similar to \p drreg_reserve_register.
+ *
+ * @return whether successful or an error code on failure.
+ */
 drreg_reserve_xmm_register(void *drcontext, instrlist_t *ilist, instr_t *where,
                        drvector_t *reg_allowed, OUT reg_id_t *reg_out);
 
@@ -368,6 +377,11 @@ drreg_reserve_dead_register(void *drcontext, instrlist_t *ilist, instr_t *where,
                             drvector_t *reg_allowed, OUT reg_id_t *reg);
 
 DR_EXPORT
+/**
+ * Similar to \p drreg_reserve_dead_register but for XMM registers
+ *
+ * @return whether successful or an error code on failure.
+ */
 drreg_status_t
 drreg_reserve_dead_xmm_register(void *drcontext, instrlist_t *ilist, instr_t *where,
                             drvector_t *reg_allowed, OUT reg_id_t *reg_out);
@@ -385,7 +399,13 @@ DR_EXPORT
 drreg_status_t
 drreg_init_and_fill_vector(drvector_t *vec, bool allowed);
 
-DR_EXPORT drreg_status_t
+DR_EXPORT
+/**
+ * Similar to \p drreg_init_and_fill_vector but for XMM registers.
+ *
+ * @return whether successful or an error code on failure.
+ */
+drreg_status_t
 drreg_init_and_fill_xmm_vector(drvector_t *vec, bool allowed);
 
 DR_EXPORT
@@ -401,6 +421,11 @@ drreg_status_t
 drreg_set_vector_entry(drvector_t *vec, reg_id_t reg, bool allowed);
 
 DR_EXPORT
+/**
+ * Similar to \p drreg_set_vector_entry but for XMM registers.
+ *
+ * @return whether successful or an error code on failure.
+ */
 drreg_status_t
 drreg_set_vector_xmm_entry(drvector_t *vec, reg_id_t reg, bool allowed);
 
@@ -590,9 +615,15 @@ drreg_unreserve_register(void *drcontext, instrlist_t *ilist, instr_t *where,
                          reg_id_t reg);
 
 DR_EXPORT
+/**
+ * Terminates exclusive use of the XMM register \p reg.
+ *
+ * Similar to \p drreg_unreserve_register but for XMM registers.
+ *
+ * @return whether successful or an error code on failure.
+ */
 drreg_status_t drreg_unreserve_xmm_register(void *drcontext, instrlist_t *ilist,
         instr_t *where, reg_id_t reg);
-
 
 DR_EXPORT
 /**
@@ -606,7 +637,15 @@ drreg_status_t
 drreg_is_register_dead(void *drcontext, reg_id_t reg, instr_t *inst, bool *dead);
 
 DR_EXPORT
-drreg_status_t drreg_is_xmm_register_dead(void *drcontext, reg_id_t reg,
+/**
+ * Returns in \p dead whether the XMM register \p reg is dead at the
+ * point of \p inst.  If called during drmgr's insertion phase, \p
+ * inst must be the current application instruction.
+ *
+ * @return whether successful or an error code on failure.
+ */
+drreg_status_t
+drreg_is_xmm_register_dead(void *drcontext, reg_id_t reg,
         instr_t *inst, bool *dead);
 
 DR_EXPORT

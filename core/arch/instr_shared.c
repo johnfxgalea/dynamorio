@@ -1266,6 +1266,19 @@ instr_length(dcontext_t *dcontext, instr_t *instr)
     return private_instr_encode(dcontext, instr, false /*don't need to cache*/);
 }
 
+instr_t *
+instr_set_encoding_hint(instr_t *instr, dr_encoding_hint_type_t hint)
+{
+    instr->encoding_hints |= hint;
+    return instr;
+}
+
+bool
+instr_has_encoding_hint(instr_t *instr, dr_encoding_hint_type_t hint)
+{
+    return TEST(hint, instr->encoding_hints);
+}
+
 /***********************************************************************/
 /* decoding routines */
 
@@ -2224,6 +2237,21 @@ instr_compute_address_helper(instr_t *instr, priv_mcontext_t *mc, size_t mc_size
     for (i = 0; i < instr_num_dsts(instr); i++) {
         curop = instr_get_dst(instr, i);
         if (opnd_is_memory_reference(curop)) {
+            if (opnd_is_vsib(curop)) {
+#ifdef X86
+                if (instr_compute_address_VSIB(instr, mc, mc_size, mc_flags, curop, index,
+                                               &have_addr, addr, &write)) {
+                    CLIENT_ASSERT(
+                        write,
+                        "VSIB found in destination but instruction is not a scatter");
+                    break;
+                } else {
+                    return false;
+                }
+#else
+                CLIENT_ASSERT(false, "VSIB should be x86-only");
+#endif
+            }
             memcount++;
             if (memcount == (int)index) {
                 write = true;
@@ -2231,7 +2259,7 @@ instr_compute_address_helper(instr_t *instr, priv_mcontext_t *mc, size_t mc_size
             }
         }
     }
-    if (memcount != (int)index &&
+    if (!write && memcount != (int)index &&
         /* lea has a mem_ref source operand, but doesn't actually read */
         !opc_is_not_a_real_memory_load(instr_get_opcode(instr))) {
         for (i = 0; i < instr_num_srcs(instr); i++) {
@@ -3466,6 +3494,20 @@ move_mm_reg_opcode(bool aligned16, bool aligned32)
     ASSERT_NOT_IMPLEMENTED(false); /* FIXME i#1569 */
     return 0;
 #    endif /* X86/ARM */
+}
+
+uint
+move_mm_avx512_reg_opcode(bool aligned64)
+{
+#    ifdef X86
+    /* move_mm_avx512_reg_opcode can only be called on processors that support AVX-512. */
+    ASSERT(ZMM_ENABLED());
+    return (aligned64 ? OP_vmovaps : OP_vmovups);
+#    else
+    /* move_mm_avx512_reg_opcode not supported on ARM/AArch64. */
+    ASSERT_NOT_IMPLEMENTED(false);
+    return 0;
+#    endif /* X86 */
 }
 
 #endif /* !STANDALONE_DECODER */
