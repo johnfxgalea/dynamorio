@@ -1205,8 +1205,7 @@ static void drbbdup_handle_new_case() {
 			__FUNCTION__, bb_pc);
 
 	if ((allow_generation && found) || !allow_generation) {
-		bool succ = dr_delete_shared_fragment(tag);
-		DR_ASSERT(succ);
+		dr_delete_shared_fragment(tag);
 	}
 
 	dr_redirect_execution(&mcontext);
