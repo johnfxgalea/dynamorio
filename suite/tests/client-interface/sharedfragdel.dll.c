@@ -61,16 +61,16 @@ void delete_fragment(app_pc tag, app_pc pc)
 static dr_emit_flags_t
 bb_event(void *drcontext, void *tag, instrlist_t *bb, bool for_trace, bool translating)
 {
-
-    dr_fprintf(STDERR, "t: %d\n", for_trace);
     instr_t *instr = instrlist_first(bb);
     app_pc pc = instr_get_app_pc(instr);
 
     if (step1_pc != NULL) {
         if (step1_pc != pc)
-            dr_fprintf(STDERR, "error: Tag mismatch - step 1\n");
+            dr_fprintf(STDERR, "error: Tag mismatch - step 1a\n");
 
-        DR_ASSERT(step2_pc == NULL);
+	if (step2_pc != NULL)
+            dr_fprintf(STDERR, "error: Tag mismatch - step 2b %p %p \n", step1_pc, step2_pc);
+
         step2_pc = step1_pc;
     }
 

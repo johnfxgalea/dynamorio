@@ -2097,7 +2097,7 @@ if (CLIENT_INTERFACE)
   endif (X86)
   # FIXME: PR 199115 to re-enable fragdel, get some more of the UNIX tests working
   #tobuild_ci(client.fragdel client-interface/fragdel.c "" "" "")
-  tobuild_ci(client.sharedfregdel client-interface/sharedfragdel.c "" "" "")
+  tobuild_ci(client.sharedfregdel client-interface/sharedfragdel.c "" "-disable_traces" "")
   if (PROGRAM_SHEPHERDING)
     tobuild_ci(client.security client-interface/security.c "" "-security_api" "")
   endif (PROGRAM_SHEPHERDING)
@@ -2214,12 +2214,11 @@ if (CLIENT_INTERFACE)
   use_DynamoRIO_extension(client.drxmgr-test.dll drx)
   use_DynamoRIO_extension(client.drxmgr-test.dll drreg)
 
-<<<<<<< HEAD
   tobuild_ci(client.drhit-test client-interface/drhit-test.c "" "" "")
   use_DynamoRIO_extension(client.drhit-test.dll drmgr)
   use_DynamoRIO_extension(client.drhit-test.dll drreg)
   use_DynamoRIO_extension(client.drhit-test.dll drhit)
-=======
+  
   if (X86)
     if (NOT MACOS)
       # XXX i#2985: The test's asm doesn't build with MacOS's clang.
@@ -2236,7 +2235,6 @@ if (CLIENT_INTERFACE)
       endif ()
     endif()
   endif ()
->>>>>>> master
 
   tobuild_appdll(client.drwrap-test client-interface/drwrap-test.c)
   get_target_path_for_execution(drwrap_libpath client.drwrap-test.appdll "${location_suffix}")
