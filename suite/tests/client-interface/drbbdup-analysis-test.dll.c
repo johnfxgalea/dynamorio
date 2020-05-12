@@ -85,15 +85,21 @@ insert_analysis_labels(void *drcontext, instrlist_t *bb)
     }
 }
 
-static void
-analyse_bb(void *drcontext, void *tag, instrlist_t *bb, uintptr_t encoding,
-           void *user_data, void *orig_analysis_data, void **analysis_data)
+static dr_emit_flags_t
+analyse_bb(void *drcontext, void *tag, instrlist_t *bb, bool for_trace, bool translating,
+           OUT void **user_data)
 {
+    uintptr_t encoding;
+    drbbdup_status_t res = drbbdup_get_current_case_encoding(drcontext, &encoding);
+    CHECK(res == DRBBDUP_SUCCESS, "failed to get encoding");
+
     switch (encoding) {
     case 0: break;
     case 1: insert_analysis_labels(drcontext, bb); break;
     default: CHECK(false, "invalid encoding");
     }
+
+    return DR_EMIT_DEFAULT;
 }
 
 static bool
@@ -102,20 +108,23 @@ is_test_label(instr_t *instr)
     return instr_is_label(instr) && instr_get_note(instr) == TEST_NOTE_VAL;
 }
 
-static void
-instrument_instr(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
-                 instr_t *where, uintptr_t encoding, void *user_data,
-                 void *orig_analysis_data, void *analysis_data)
+static dr_emit_flags_t
+instrument_instr(void *drcontext, void *tag, instrlist_t *bb, instr_t *where,
+                 bool for_trace, bool translating, void *user_data)
 {
+    uintptr_t encoding;
+    drbbdup_status_t res = drbbdup_get_current_case_encoding(drcontext, &encoding);
+    CHECK(res == DRBBDUP_SUCCESS, "failed to get encoding");
+
     switch (encoding) {
     case 0:
-        if (is_test_label(instr))
+        if (is_test_label(where))
             CHECK(false, "no test label should be present in default case");
         break;
     case 1:
-        if (is_test_label(instr)) {
+        if (is_test_label(where)) {
             test_label_persisted = true;
-        } else if (instr_is_app(instr)) {
+        } else if (instr_is_app(where)) {
             bool is_label = is_test_label(instr_get_prev(where));
             CHECK(is_label, "prev instr should be test label")
         }
@@ -124,6 +133,8 @@ instrument_instr(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
     }
 
     instrum_called = true;
+
+    return DR_EMIT_DEFAULT;
 }
 
 static void
@@ -147,11 +158,6 @@ dr_init(client_id_t id)
     opts.struct_size = sizeof(drbbdup_options_t);
     opts.set_up_bb_dups = set_up_bb_dups;
     opts.insert_encode = NULL;
-    opts.analyze_orig = NULL;
-    opts.destroy_orig_analysis = NULL;
-    opts.analyze_case = analyse_bb;
-    opts.destroy_case_analysis = NULL;
-    opts.instrument_instr = instrument_instr;
     opts.runtime_case_opnd = opnd_create_abs_addr(&encode_val, OPSZ_PTR);
     opts.user_data = NULL;
     opts.non_default_case_limit = 1;
@@ -159,5 +165,9 @@ dr_init(client_id_t id)
 
     drbbdup_status_t res = drbbdup_init(&opts);
     CHECK(res == DRBBDUP_SUCCESS, "drbbdup init failed");
+
+    if (!drmgr_register_bb_instrumentation_event(analyse_bb, instrument_instr, NULL))
+        DR_ASSERT(false);
+
     dr_register_exit_event(event_exit);
 }

@@ -45,13 +45,6 @@
 extern "C" {
 #endif
 
-#define drmgr_is_first_instr \
-    DO_NOT_USE_drmgr_is_first_instr_USE_drbbdup_is_first_instr_instead
-#define drmgr_is_first_nonlabel_instr \
-    DO_NOT_USE_drmgr_is_first_nonlabel_instr_USE_drbbdup_is_first_nonlabel_instr_instead
-#define drmgr_is_last_instr \
-    DO_NOT_USE_drmgr_is_last_instr_USE_drbbdup_is_last_instr_instead
-
 /**
  * \addtogroup drbbdup Basic Block Duplicator
  */
@@ -64,10 +57,12 @@ typedef enum {
     DRBBDUP_ERROR_INVALID_OPND,            /**< Operation failed: invalid case opnd. */
     DRBBDUP_ERROR_CASE_ALREADY_REGISTERED, /**< Operation failed: already registered. */
     DRBBDUP_ERROR_CASE_LIMIT_REACHED,      /**< Operation failed: case limit reached. */
-    DRBBDUP_ERROR_ALREADY_INITIALISED,     /**< DRBBDUP can only be initialised once. */
+    DRBBDUP_ERROR_ALREADY_INITIALISED,     /**< Operation failed: already initialized. */
     DRBBDUP_ERROR,                         /**< Operation failed. */
     DRBBDUP_ERROR_UNSET_FEATURE,           /**< Operation failed: feature not set. */
     DRBBDUP_ERROR_NOT_INITIALIZED,         /**< Operation failed: not initialized. */
+    DRBBDUP_ERROR_NO_INSTRUM,              /**< Operation failed: not in drmgr phase. */
+    DRBBDUP_ERROR_NO_CASE,                 /**< Operation failed: no case defined. */
 } drbbdup_status_t;
 
 /***************************************************************************
@@ -98,80 +93,6 @@ typedef uintptr_t (*drbbdup_set_up_bb_dups_t)(void *drbbdup_ctx, void *drcontext
                                               void *user_data);
 
 /**
- * When a unregistered case \p new_case is identified as a candidate for dynamic handling,
- * such a call-back function is invoked to give the user the opportunity
- * to go ahead or stop the generation of an additional basic block copy.
- * The call-back should return true if generation should be done, and false otherwise.
- * In addition, the call-back can also turn off dynamic handling for the considered basic
- * block by setting \p enable_dynamic_handling to false.
- */
-typedef bool (*drbbdup_allow_gen_t)(void *drcontext, void *tag, instrlist_t *ilist,
-                                    uintptr_t new_case, bool *enable_dynamic_handling,
-                                    void *user_data);
-
-/**
- * Conducts an analysis of the original basic block. The call-back is not called for
- * each case, but once for the overall fragment. Therefore, computationally expensive
- * analysis that only needs to be done once per fragment can be implemented by this
- * call-back and made available to all cases of the basic block. The function should
- * store the analysis result in \p orig_analysis_data. The  user data \p user_data is
- * that supplied to drbbdup_init().
- *
- * It is not possible to insert note labels via this analysis call-back function.
- * Any labels inserted will not persist. Such functionality is only possible via a
- * #drbbdup_analyze_case_t call-back.
- *
- * The user can use thread allocation for storing the analysis result.
- *
- * The analysis data is destroyed via a #drbbdup_destroy_orig_analysis_t function.
- *
- * @return whether successful or an error code on failure.
- */
-typedef void (*drbbdup_analyze_orig_t)(void *drcontext, void *tag, instrlist_t *bb,
-                                       void *user_data, IN void **orig_analysis_data);
-
-/**
- * Destroys analysis data \p orig_analysis_data.
- *
- * The function is not invoked by drbbdup if \p orig_analysis_data was set
- * to NULL by the the #drbbdup_analyze_orig_t function.
- *
- */
-typedef void (*drbbdup_destroy_orig_analysis_t)(void *drcontext, void *user_data,
-                                                void *orig_analysis_data);
-
-/**
- * Conducts an analysis on a basic block with respect to a case with encoding \p encoding.
- * The result of the analysis needs to be stored in \p case_analysis_data.
- *
- * The user data \p user_data is that supplied to drbbdup_init(). Analysis data
- * \p orig_analysis_data that was conducted on the original bb is also provided.
- *
- * The user can use thread allocation for storing the analysis result.
- *
- * The analysis data is destroyed via a #drbbdup_analyze_case_t function.
- */
-typedef void (*drbbdup_analyze_case_t)(void *drcontext, void *tag, instrlist_t *bb,
-                                       uintptr_t encoding, void *user_data,
-                                       void *orig_analysis_data,
-                                       IN void **case_analysis_data);
-
-/**
- * Destroys analysis data \p case_analysis_data for the case with encoding \p encoding.
- *
- * The function is not invoked by drbbdup if \p case_analysis_data was set to NULL by the
- * #drbbdup_analyze_case_t function.
- *
- * The  user data \p user_data is that supplied to drbbdup_init(). Analysis data
- * \p orig_analysis_data that was conducted on the original bb is also provided.
- *
- * \note The user should not destroy orig_analysis_data.
- */
-typedef void (*drbbdup_destroy_case_analysis_t)(void *drcontext, uintptr_t encoding,
-                                                void *user_data, void *orig_analysis_data,
-                                                void *case_analysis_data);
-
-/**
  * Inserts code responsible for encoding the current runtime
  * case at point of entry to the dispatcher. The function should
  * store the resulting pointer-sized encoding to memory that is
@@ -185,24 +106,19 @@ typedef void (*drbbdup_destroy_case_analysis_t)(void *drcontext, uintptr_t encod
  * encoding is not modified by drbbdup.
  */
 typedef void (*drbbdup_insert_encode_t)(void *drcontext, void *tag, instrlist_t *bb,
-                                        instr_t *where, void *user_data,
-                                        void *orig_analysis_data);
+                                        instr_t *where, void *user_data);
 
 /**
- * A user-defined call-back function that is invoked to instrument an instruction \p
- * instr. The inserted code must be placed at \p where.
- *
- * Instrumentation must be driven according to the passed case encoding \p encoding.
- *
- * The user data \p user_data is that supplied to drbbdup_init(). Analysis data
- * \p orig_analysis_data and \p case_analysis_data are also provided.
- *
+ * When a unregistered case \p new_case is identified as a candidate for dynamic handling,
+ * such a call-back function is invoked to give the user the opportunity
+ * to go ahead or stop the generation of an additional basic block copy.
+ * The call-back should return true if generation should be done, and false otherwise.
+ * In addition, the call-back can also turn off dynamic handling for the considered basic
+ * block by setting \p enable_dynamic_handling to false.
  */
-typedef void (*drbbdup_instrument_instr_t)(void *drcontext, void *tag, instrlist_t *bb,
-                                           instr_t *instr, instr_t *where,
-                                           uintptr_t encoding, void *user_data,
-                                           void *orig_analysis_data,
-                                           void *case_analysis_data);
+typedef bool (*drbbdup_allow_gen_t)(void *drcontext, void *tag, instrlist_t *ilist,
+                                    uintptr_t new_case, bool *enable_dynamic_handling,
+                                    void *user_data);
 
 /***************************************************************************
  * INIT
@@ -232,31 +148,6 @@ typedef struct {
      * encoding, thus enabling insert_encode to perform no operation and not be needed.
      */
     drbbdup_insert_encode_t insert_encode;
-    /**
-     * A user-defined call-back function that conducts an analysis of the original basic
-     * block.
-     */
-    drbbdup_analyze_orig_t analyze_orig;
-    /**
-     * A user-defined call-back function that destroys analysis data of the original basic
-     * block.
-     */
-    drbbdup_destroy_orig_analysis_t destroy_orig_analysis;
-    /**
-     * A user-defined call-back function that analyzes a basic block for a particular
-     * case.
-     */
-    drbbdup_analyze_case_t analyze_case;
-    /**
-     * A user-defined call-back function that destroys analysis data for a particular
-     * case.
-     */
-    drbbdup_destroy_case_analysis_t destroy_case_analysis;
-    /**
-     * A user-defined call-back function that instruments an instruction with respect to a
-     * particular case.
-     */
-    drbbdup_instrument_instr_t instrument_instr;
     /**
      * A user-defined call-back function that determines whether to dynamically generate
      * a basic block copy to handle a new case encountered at runtime. The function may
@@ -322,28 +213,6 @@ typedef struct {
     unsigned long bail_count;
 } drbbdup_stats_t;
 
-/**
- * Priorities of drmgr instrumentation passes used by drbbdup. Users
- * can perform app2app manipulations prior to duplication
- * by ordering such changes before #DRMGR_PRIORITY_APP2APP_DRBBDUP.
- */
-enum {
-    /** Priority of drbbdup's app2app stage. */
-    DRMGR_PRIORITY_APP2APP_DRBBDUP = 6500,
-    /** Priority of drbbdup's insert stage. */
-    DRMGR_PRIORITY_INSERT_DRBBDUP = -6500
-};
-
-/**
- * Name of drbbdup app2app priority.
- */
-#define DRMGR_PRIORITY_APP2APP_NAME_DRBBDUP "drbbdup_app2app"
-
-/**
- * Name of drbbdup insert priority.
- */
-#define DRMGR_PRIORITY_INSERT_NAME_DRBBDUP "drbbdup_insert"
-
 DR_EXPORT
 /**
  * Initialises the drbbdup extension. Must be called before use of any other routines.
@@ -382,42 +251,14 @@ drbbdup_register_case_encoding(void *drbbdup_ctx, uintptr_t encoding);
 
 DR_EXPORT
 /**
- * Indicates whether the instruction \p instr is the first instruction of
- * the currently considered basic block copy. The result is returned in \p is_start.
- *
- * Must be called via a #drbbdup_instrument_instr_t call-back function.
- *
- * @return whether successful or an error code on failure.
- * @note when using drbbdup, do not rely on drmgr_is_first_instr().
- */
-drbbdup_status_t
-drbbdup_is_first_instr(void *drcontext, instr_t *instr, OUT bool *is_start);
-
-DR_EXPORT
-/**
- * Indicates whether the instruction \p instr is the first non label instruction of
- * the currently considered basic block copy. The result is returned in \p is_nonlabel.
- *
- * Must be called via a #drbbdup_instrument_instr_t call-back function.
+ * Returns via \p cur_case the current case encoding that is
+ * being considered by the calling thread during instrumentation.
+ * Can only be called during an instrumentation phase of drmgr.
  *
  * @return whether successful or an error code on failure.
- * @note when using drbbdup, do not rely on drmgr_is_first_nonlabel_instr().
  */
 drbbdup_status_t
-drbbdup_is_first_nonlabel_instr(void *drcontext, instr_t *instr, bool *is_nonlabel);
-
-DR_EXPORT
-/**
- * Indicates whether the instruction \p instr is the last instruction of the currently
- * considered basic block copy. The result is returned in \p is_last.
- *
- * Must be called via a #drbbdup_instrument_instr_t call-back function.
- *
- * @return whether successful or an error code on failure.
- * @note when using drbbdup, do not rely on drmgr_is_last_instr().
- */
-drbbdup_status_t
-drbbdup_is_last_instr(void *drcontext, instr_t *instr, OUT bool *is_last);
+drbbdup_get_current_case_encoding(void *drcontext, OUT uintptr_t *cur_case);
 
 DR_EXPORT
 /**
