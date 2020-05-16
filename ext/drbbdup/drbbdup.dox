@@ -59,9 +59,7 @@ the default case is executed.
 
  - \ref sec_drbbdup_init
  - \ref sec_drbbdup_bb
- - \ref sec_drbbdup_analysis
  - \ref sec_drbbdup_encoder
- - \ref sec_drbbdup_instrum
 
 \section sec_drbbdup_init Setup
 
@@ -87,6 +85,7 @@ default case as well as register additional case encodings via
 disable duplication for this particular basic block by falsifying a flag that is
 provided to the call-back function.
 
+\cond
 \section sec_drbbdup_analysis Case Analysis
 
 There are two types of analysis call-back functions that are supported by drbbdup.
@@ -106,6 +105,7 @@ analysis data.
 Furthermore, should the client perform some analysis prior to duplication during the
 app2app stage via a separate event, then such data should be stored and accessed via
 TLS.
+\endcond
 
 \section sec_drbbdup_encoder Encoder
 
@@ -125,6 +125,7 @@ a basic block execution. In such cases, it is expected that the client directly
 sets the runtime encoding directly and updates the value on demand. The drbbdup extension
 guarantees that it does not modify the set encoding on its own accord.
 
+\cond
 \section sec_drbbdup_instrum Case Instrumentation
 
 drbbdup invokes the #drbbdup_instrument_instr_t call-back function to
@@ -142,6 +143,7 @@ and drbbdup_is_last_instr() to determine whether the passed instruction
 is the first, first non label and last instruction of a basic block copy respectively.
 Note the client should not use drmgr varients such as drmgr_is_first_instr() as these
 API functions do not take into account drbbdup's internals and therefore will fail.
+\endcond
 
 */
 

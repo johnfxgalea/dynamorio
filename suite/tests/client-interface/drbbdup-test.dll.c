@@ -49,13 +49,9 @@
 #define ANALYSIS_VAL_1 (void *)888
 #define ANALYSIS_VAL_2 (void *)999
 
-static bool orig_analysis_called = false;
-static bool orig_analysis_destroy_called = false;
 static bool default_analysis_called = false;
 static bool case1_analysis_called = false;
-static bool case1_analysis_destroy_called = false;
 static bool case2_analysis_called = false;
-static bool case2_analysis_destroy_called = false;
 static bool instrum_called = false;
 
 /* Assume single threaded. */
@@ -83,7 +79,8 @@ set_up_bb_dups(void *drbbdup_ctx, void *drcontext, void *tag, instrlist_t *bb,
 
     if (!enable_dups_flag)
         no_dup_count++;
-    no_dynamic_handling_count++;
+    else
+        no_dynamic_handling_count++;
 
     *enable_dups = enable_dups_flag;
     enable_dups_flag = !enable_dups_flag; /* alternate flag */
@@ -92,66 +89,24 @@ set_up_bb_dups(void *drbbdup_ctx, void *drcontext, void *tag, instrlist_t *bb,
     return 0; /* return default case */
 }
 
-static void
-orig_analyse_bb(void *drcontext, void *tag, instrlist_t *bb, void *user_data,
-                void **orig_analysis_data)
+static dr_emit_flags_t
+analyse_bb(void *drcontext, void *tag, instrlist_t *bb, bool for_trace, bool translating,
+           OUT void **user_data)
 {
-    CHECK(user_data == USER_DATA_VAL, "user data does not match");
-    *orig_analysis_data = ORIG_ANALYSIS_VAL;
-    orig_analysis_called = true;
-}
+    *user_data = USER_DATA_VAL;
 
-static void
-destroy_orig_analysis(void *drcontext, void *user_data, void *orig_analysis_data)
-{
-    CHECK(user_data == USER_DATA_VAL, "user data does not match");
-    CHECK(orig_analysis_data == ORIG_ANALYSIS_VAL, "orig analysis data does not match");
-    orig_analysis_destroy_called = true;
-}
+    uintptr_t encoding;
+    drbbdup_status_t res = drbbdup_get_current_case_encoding(drcontext, &encoding);
 
-static void
-analyse_bb(void *drcontext, void *tag, instrlist_t *bb, uintptr_t encoding,
-           void *user_data, void *orig_analysis_data, void **analysis_data)
-{
-    CHECK(user_data == USER_DATA_VAL, "user data does not match");
-    CHECK(orig_analysis_data == ORIG_ANALYSIS_VAL, "orig analysis data does not match");
-
-    switch (encoding) {
-    case 0:
-        *analysis_data = NULL;
-        default_analysis_called = true;
-        break;
-    case 1:
-        *analysis_data = ANALYSIS_VAL_1;
-        case1_analysis_called = true;
-        break;
-    case 2:
-        *analysis_data = ANALYSIS_VAL_2;
-        case2_analysis_called = true;
-        break;
-    default: CHECK(false, "invalid encoding");
+    if (res == DRBBDUP_SUCCESS) {
+        switch (encoding) {
+        case 0: default_analysis_called = true; break;
+        case 1: case1_analysis_called = true; break;
+        case 2: case2_analysis_called = true; break;
+        default: CHECK(false, "invalid encoding");
+        }
     }
-}
-
-static void
-destroy_analysis(void *drcontext, uintptr_t encoding, void *user_data,
-                 void *orig_analysis_data, void *analysis_data)
-{
-    CHECK(user_data == USER_DATA_VAL, "user data does not match");
-    CHECK(orig_analysis_data == ORIG_ANALYSIS_VAL, "orig analysis data does not match");
-
-    switch (encoding) {
-    case 0: CHECK(false, "should not be called because analysis data is NULL"); break;
-    case 1:
-        CHECK(analysis_data == ANALYSIS_VAL_1, "invalid encoding for case 1");
-        case1_analysis_destroy_called = true;
-        break;
-    case 2:
-        CHECK(analysis_data == ANALYSIS_VAL_2, "invalid encoding for case 2");
-        case2_analysis_destroy_called = true;
-        break;
-    default: CHECK(false, "invalid encoding");
-    }
+    return DR_EMIT_DEFAULT;
 }
 
 static void
@@ -163,10 +118,9 @@ update_encoding()
 
 static void
 insert_encode(void *drcontext, void *tag, instrlist_t *bb, instr_t *where,
-              void *user_data, void *orig_analysis_data)
+              void *user_data)
 {
     CHECK(user_data == USER_DATA_VAL, "user data does not match");
-    CHECK(orig_analysis_data == ORIG_ANALYSIS_VAL, "orig analysis data does not match");
 
     dr_insert_clean_call(drcontext, bb, where, update_encoding, false, 0);
 }
@@ -177,44 +131,32 @@ print_case(uintptr_t case_val)
     dr_fprintf(STDERR, "case %u\n", case_val);
 }
 
-static void
-instrument_instr(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
-                 instr_t *where, uintptr_t encoding, void *user_data,
-                 void *orig_analysis_data, void *analysis_data)
+static dr_emit_flags_t
+instrument_instr(void *drcontext, void *tag, instrlist_t *bb, instr_t *where,
+                 bool for_trace, bool translating, void *user_data)
 {
     bool is_first, is_first_nonlabel;
     drbbdup_status_t res;
 
     CHECK(user_data == USER_DATA_VAL, "user data does not match");
-    CHECK(orig_analysis_data == ORIG_ANALYSIS_VAL, "orig analysis data does not match");
 
-    switch (encoding) {
-    case 0:
-        CHECK(analysis_data == NULL, "case analysis does not match for default case");
-        break;
-    case 1:
-        CHECK(analysis_data == ANALYSIS_VAL_1, "case analysis does not match for case 1");
-        break;
-    case 2:
-        CHECK(analysis_data == ANALYSIS_VAL_2, "case analysis does not match for case 2");
-        break;
-    default: CHECK(false, "invalid encoding");
+    uintptr_t encoding;
+    res = drbbdup_get_current_case_encoding(drcontext, &encoding);
+
+    if (res == DRBBDUP_SUCCESS) {
+        is_first = drmgr_is_first_instr(drcontext, where);
+        if (is_first && !instr_is_label(where)) {
+            is_first_nonlabel = drmgr_is_first_nonlabel_instr(drcontext, where);
+            CHECK(is_first_nonlabel, "should be first non label");
+        }
+
+        if (is_first && encoding != 0) {
+            instrum_called = true;
+            dr_insert_clean_call(drcontext, bb, where, print_case, false, 1,
+                                 OPND_CREATE_INTPTR(encoding));
+        }
     }
-
-    res = drbbdup_is_first_instr(drcontext, instr, &is_first);
-    CHECK(res == DRBBDUP_SUCCESS, "failed to check whether instr is start");
-
-    if (is_first && !instr_is_label(instr)) {
-        res = drbbdup_is_first_nonlabel_instr(drcontext, instr, &is_first_nonlabel);
-        CHECK(res == DRBBDUP_SUCCESS, "failed to check whether instr is first non label");
-        CHECK(is_first_nonlabel, "should be first non label");
-    }
-
-    if (is_first && encoding != 0) {
-        instrum_called = true;
-        dr_insert_clean_call(drcontext, bb, where, print_case, false, 1,
-                             OPND_CREATE_INTPTR(encoding));
-    }
+    return DR_EMIT_DEFAULT;
 }
 
 static void
@@ -235,14 +177,9 @@ event_exit(void)
     res = drbbdup_exit();
     CHECK(res == DRBBDUP_SUCCESS, "drbbdup exit failed");
 
-    CHECK(orig_analysis_called, "orig analysis was not done");
     CHECK(default_analysis_called, "default analysis was not done");
     CHECK(case1_analysis_called, "case 1 analysis was not done");
     CHECK(case2_analysis_called, "case 2 analysis was not done");
-
-    CHECK(orig_analysis_destroy_called, "orig analysis was not destroyed");
-    CHECK(case1_analysis_destroy_called, "case 1 analysis was not destroyed");
-    CHECK(case2_analysis_destroy_called, "case 2 analysis was not destroyed");
 
     CHECK(instrum_called, "instrumentation was not inserted");
 
@@ -258,11 +195,6 @@ dr_init(client_id_t id)
     opts.struct_size = sizeof(drbbdup_options_t);
     opts.set_up_bb_dups = set_up_bb_dups;
     opts.insert_encode = insert_encode;
-    opts.analyze_orig = orig_analyse_bb;
-    opts.destroy_orig_analysis = destroy_orig_analysis;
-    opts.analyze_case = analyse_bb;
-    opts.destroy_case_analysis = destroy_analysis;
-    opts.instrument_instr = instrument_instr;
     opts.runtime_case_opnd = opnd_create_abs_addr(&encode_val, OPSZ_PTR);
     opts.user_data = USER_DATA_VAL;
     opts.non_default_case_limit = 2;
@@ -270,5 +202,9 @@ dr_init(client_id_t id)
 
     drbbdup_status_t res = drbbdup_init(&opts);
     CHECK(res == DRBBDUP_SUCCESS, "drbbdup init failed");
+
+    if (!drmgr_register_bb_instrumentation_event(analyse_bb, instrument_instr, NULL))
+        DR_ASSERT(false);
+
     dr_register_exit_event(event_exit);
 }

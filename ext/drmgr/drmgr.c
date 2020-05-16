@@ -1021,6 +1021,7 @@ drmgr_bb_event_instrument_dups(void *drcontext, void *tag, instrlist_t *bb,
         local_info->bbdup_insert_encoding_cb(drcontext, tag, bb, for_trace, translating,
                                              local_dup_info);
     }
+
     return is_dups;
 }
 

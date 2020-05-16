@@ -123,26 +123,8 @@ set_up_bb_dups(void *drbbdup_ctx, void *drcontext, void *tag, instrlist_t *bb,
     /* Register the case encoding for counting the execution of hot basic blocks. */
     drbbdup_register_case_encoding(drbbdup_ctx, (uintptr_t) true /* hot */);
 
-    /* Set the default case encoding for tracking the hit count of basic blocks. */
+    /* Return the default case encoding for tracking the hit count of basic blocks. */
     return 0; /* cold */
-}
-
-static void
-analyse_orig_bb(void *drcontext, void *tag, instrlist_t *bb, void *user_data,
-                IN void **orig_analysis_data)
-{
-    /* Extract bb_pc and store it as analysis data. */
-    app_pc *bb_pc = dr_thread_alloc(drcontext, sizeof(app_pc));
-    *bb_pc = instr_get_app_pc(instrlist_first_app(bb));
-    *orig_analysis_data = bb_pc;
-}
-
-static void
-destroy_orig_analysis(void *drcontext, void *user_data, void *bb_pc)
-{
-    /* Destroy the orig analysis data, particularly the pc of the bb. */
-    DR_ASSERT(bb_pc != NULL);
-    dr_thread_free(drcontext, bb_pc, sizeof(app_pc));
 }
 
 static void
@@ -162,11 +144,11 @@ encode(app_pc bb_pc)
 
 static void
 insert_encode(void *drcontext, void *tag, instrlist_t *bb, instr_t *where,
-              void *user_data, void *orig_analysis_data)
+              void *user_data)
 {
-    app_pc *bb_pc = (app_pc *)orig_analysis_data;
+    app_pc bb_pc = dr_fragment_app_pc(tag);
     dr_insert_clean_call(drcontext, bb, where, (void *)encode, false, 1,
-                         OPND_CREATE_INTPTR(*bb_pc));
+                         OPND_CREATE_INTPTR(bb_pc));
 }
 
 static void
@@ -183,12 +165,10 @@ register_hit(app_pc bb_pc)
     hashtable_unlock(&hit_count_table);
 }
 
-static void
-instrument_instr(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
-                 instr_t *where, uintptr_t encoding, void *user_data,
-                 void *orig_analysis_data, void *analysis_data)
+static dr_emit_flags_t
+event_bb_insert(void *drcontext, void *tag, instrlist_t *bb, instr_t *where,
+                bool for_trace, bool translating, void *user_data)
 {
-    bool is_start;
 
     /* By default drmgr enables auto-predication, which predicates all instructions with
      * the predicate of the current instruction on ARM.
@@ -200,7 +180,13 @@ instrument_instr(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
     /* Determine whether the instr is the first instruction in the
      * currently considered basic block copy.
      */
-    drbbdup_is_first_instr(drcontext, instr, &is_start);
+    bool is_start = drmgr_is_first_instr(drcontext, where);
+
+    /* Get the current case encoding for this instrumentation. */
+    uintptr_t encoding;
+    drbbdup_status_t res = drbbdup_get_current_case_encoding(drcontext, &encoding);
+    DR_ASSERT_MSG(res == DRBBDUP_SUCCESS, "should suceed in getting encoding");
+
     if (is_start) {
         /* Check if hot case. */
         if (encoding == 1) {
@@ -213,12 +199,14 @@ instrument_instr(void *drcontext, void *tag, instrlist_t *bb, instr_t *instr,
 
         } else {
             /* Basic block is cold. Therefore insert clean call to mark the hit. */
-            app_pc *bb_pc = (app_pc *)orig_analysis_data;
+            app_pc bb_pc = dr_fragment_app_pc(tag);
             dr_insert_clean_call(drcontext, bb, where /* insert always at where */,
                                  (void *)register_hit, false, 1,
-                                 OPND_CREATE_INTPTR(*bb_pc));
+                                 OPND_CREATE_INTPTR(bb_pc));
         }
     }
+
+    return DR_EMIT_DEFAULT;
 }
 
 static void
@@ -258,9 +246,6 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
     drbbdup_ops.struct_size = sizeof(drbbdup_options_t);
     drbbdup_ops.set_up_bb_dups = set_up_bb_dups;
     drbbdup_ops.insert_encode = insert_encode;
-    drbbdup_ops.analyze_orig = analyse_orig_bb;
-    drbbdup_ops.destroy_orig_analysis = destroy_orig_analysis;
-    drbbdup_ops.instrument_instr = instrument_instr;
     /* The operand referring to memory storing the current runtime case encoding. */
     drbbdup_ops.runtime_case_opnd =
         dr_raw_tls_opnd(dr_get_current_drcontext(), tls_raw_reg, tls_raw_offset);
@@ -268,6 +253,9 @@ dr_client_main(client_id_t id, int argc, const char *argv[])
     drbbdup_ops.is_stat_enabled = false;
 
     if (drbbdup_init(&drbbdup_ops) != DRBBDUP_SUCCESS)
+        DR_ASSERT(false);
+
+    if (!drmgr_register_bb_instrumentation_event(NULL, event_bb_insert, NULL))
         DR_ASSERT(false);
 
     /* make it easy to tell, by looking at log file, which client executed */
