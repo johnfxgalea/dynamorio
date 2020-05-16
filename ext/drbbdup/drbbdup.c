@@ -35,6 +35,7 @@
 #include "drmgr.h"
 #include "../drmgr/drmgr_priv.h"
 #include "hashtable.h"
+#include "drreg.h"
 #include "drbbdup.h"
 #include <string.h>
 #include <stdint.h>
@@ -108,6 +109,9 @@ typedef struct {
 typedef struct {
     /* Used to keep track of the current case during drmgr's instrumentation. */
     drbbdup_manager_t manager;
+    /* Used for reg liveness */
+    bool is_scratch_reg_live;
+    bool is_flags_reg_live;
     /* Used for dup iteration and stitching: */
     uint case_index;
     instr_t *bb_start; /* used for stitching */
@@ -125,7 +129,10 @@ static void *stat_mutex = NULL;
 static drbbdup_stats_t stats;
 
 /* An outlined code cache (storing a clean call) for dynamically generating a case. */
-static app_pc new_case_cache_pc = NULL;
+static app_pc code_cache_all_live_pc = NULL;
+static app_pc code_cache_scratch_live_pc = NULL;
+static app_pc code_cache_flag_live_pc = NULL;
+static app_pc code_cache_none_live_pc = NULL;
 
 static int tls_idx = -1; /* For thread local storage info. */
 static reg_id_t tls_raw_reg;
@@ -228,6 +235,7 @@ drbbdup_create_manager(void *drcontext, void *tag, instrlist_t *bb)
         opts.set_up_bb_dups(manager, drcontext, tag, bb, &enable_dup,
                             &manager->enable_dynamic_handling, opts.user_data);
 
+    /* Set default case regardless whether dups are enabled. */
     drbbdup_per_thread *pt =
         (drbbdup_per_thread *)drmgr_get_tls_field(drcontext, tls_idx);
     pt->cur_case = manager->default_case;
@@ -252,8 +260,11 @@ drbbdup_create_manager(void *drcontext, void *tag, instrlist_t *bb)
 }
 
 static drbbdup_local_info_t *
-drbbdup_create_local_info(void *drcontext, drbbdup_manager_t *manager_to_copy)
+drbbdup_create_local_info(void *drcontext, instrlist_t *bb,
+                          drbbdup_manager_t *manager_to_copy)
 {
+    bool is_dead;
+
     drbbdup_local_info_t *local_info =
         dr_thread_alloc(drcontext, sizeof(drbbdup_local_info_t));
     memset(local_info, 0, sizeof(drbbdup_local_info_t));
@@ -263,6 +274,12 @@ drbbdup_create_local_info(void *drcontext, drbbdup_manager_t *manager_to_copy)
         dr_thread_alloc(drcontext, sizeof(drbbdup_case_t) * opts.non_default_case_limit);
     memcpy(local_info->manager.cases, manager_to_copy->cases,
            sizeof(drbbdup_case_t) * opts.non_default_case_limit);
+
+    drreg_is_register_dead(drcontext, DRBBDUP_SCRATCH_REG, instrlist_first(bb), &is_dead);
+    local_info->is_scratch_reg_live = !is_dead;
+
+    drreg_are_aflags_dead(drcontext, instrlist_first(bb), &is_dead);
+    local_info->is_flags_reg_live = !is_dead;
 
     return local_info;
 }
@@ -435,7 +452,7 @@ drbbdup_duplicate(void *drcontext, void *tag, instrlist_t *bb, bool for_trace,
 
     if (manager != NULL) {
         /* Create a local context to avoid further locking. */
-        local_info = drbbdup_create_local_info(drcontext, manager);
+        local_info = drbbdup_create_local_info(drcontext, bb, manager);
     }
 
     dr_rwlock_write_unlock(rw_lock);
@@ -619,12 +636,16 @@ drbbdup_extract_bb_copy(void *drcontext, void *tag, instrlist_t *bb, bool for_tr
  */
 static void
 drbbdup_insert_landing_restoration(void *drcontext, instrlist_t *bb, instr_t *where,
-                                   const drbbdup_manager_t *manager)
+                                   drbbdup_local_info_t *local_info)
 {
-    drbbdup_restore_register(drcontext, bb, where, 2, DRBBDUP_SCRATCH_REG);
-    dr_restore_arith_flags_from_xax(drcontext, bb, where);
+    if (local_info->is_flags_reg_live) {
+        drbbdup_restore_register(drcontext, bb, where, 2, DRBBDUP_SCRATCH_REG);
+        dr_restore_arith_flags_from_xax(drcontext, bb, where);
+    }
 
-    drbbdup_restore_register(drcontext, bb, where, 1, DRBBDUP_SCRATCH_REG);
+    if (local_info->is_scratch_reg_live) {
+        drbbdup_restore_register(drcontext, bb, where, 1, DRBBDUP_SCRATCH_REG);
+    }
 }
 
 #ifdef X86_64
@@ -683,15 +704,30 @@ drbbdup_get_hitcount_hash(intptr_t bb_id)
     return hash;
 }
 
+static app_pc
+get_fp_cache(bool is_flags_reg_live, bool is_scratch_reg_live)
+{
+
+    if (is_flags_reg_live && is_scratch_reg_live)
+        return code_cache_all_live_pc;
+    else if (is_flags_reg_live && !is_scratch_reg_live)
+        return code_cache_flag_live_pc;
+    else if (!is_flags_reg_live && is_scratch_reg_live)
+        return code_cache_scratch_live_pc;
+    else
+        return code_cache_none_live_pc;
+}
+
 /* Insert trigger for dynamic case handling. */
 static void
 drbbdup_insert_dynamic_handling(void *drcontext, app_pc translation_pc, void *tag,
                                 instrlist_t *bb, instr_t *where,
-                                drbbdup_manager_t *manager)
+                                drbbdup_local_info_t *local_info)
 {
     instr_t *instr;
-    opnd_t drbbdup_opnd = opnd_create_reg(DRBBDUP_SCRATCH_REG);
+    drbbdup_manager_t *manager = &local_info->manager;
 
+    opnd_t drbbdup_opnd = opnd_create_reg(DRBBDUP_SCRATCH_REG);
     instr_t *done_label = INSTR_CREATE_label(drcontext);
 
     /* Check whether case limit has not been reached. */
@@ -711,6 +747,9 @@ drbbdup_insert_dynamic_handling(void *drcontext, app_pc translation_pc, void *ta
         opnd_t encoding_opnd = drbbdup_get_tls_raw_slot_opnd(DRBBDUP_ENCODING_SLOT);
         instr = XINST_CREATE_store(drcontext, encoding_opnd, drbbdup_opnd);
         instrlist_meta_preinsert(bb, where, instr);
+
+        app_pc code_cache_pc =
+            get_fp_cache(local_info->is_flags_reg_live, local_info->is_scratch_reg_live);
 
         /* Don't bother insertion if threshold limit is zero. */
         if (opts.hit_threshold > 0) {
@@ -736,7 +775,7 @@ drbbdup_insert_dynamic_handling(void *drcontext, app_pc translation_pc, void *ta
                                              where, NULL, NULL);
 
             /* Jump if hit reaches zero. */
-            instr = INSTR_CREATE_jcc(drcontext, OP_jz, opnd_create_pc(new_case_cache_pc));
+            instr = INSTR_CREATE_jcc(drcontext, OP_jz, opnd_create_pc(code_cache_pc));
             instrlist_meta_preinsert(bb, where, instr);
 
         } else {
@@ -747,7 +786,7 @@ drbbdup_insert_dynamic_handling(void *drcontext, app_pc translation_pc, void *ta
                                              instr, NULL, NULL);
 
             /* Jump to outlined clean call code for new case registration. */
-            instr = XINST_CREATE_jump(drcontext, opnd_create_pc(new_case_cache_pc));
+            instr = XINST_CREATE_jump(drcontext, opnd_create_pc(code_cache_pc));
             instrlist_meta_preinsert(bb, where, instr);
         }
     }
@@ -771,7 +810,7 @@ drbbdup_insert_dynamic_handling(void *drcontext, app_pc translation_pc, void *ta
  */
 static void
 drbbdup_insert_dispatch(void *drcontext, instrlist_t *bb, instr_t *where,
-                        drbbdup_manager_t *manager, instr_t *next_label,
+                        drbbdup_local_info_t *local_info, instr_t *next_label,
                         drbbdup_case_t *current_case)
 {
     ASSERT(next_label != NULL, "the label to the next bb copy cannot be NULL");
@@ -786,25 +825,28 @@ drbbdup_insert_dispatch(void *drcontext, instrlist_t *bb, instr_t *where,
     instrlist_meta_preinsert(bb, where, instr);
 
     /* If fall-through, restore regs back to their original values. */
-    drbbdup_insert_landing_restoration(drcontext, bb, where, manager);
+    drbbdup_insert_landing_restoration(drcontext, bb, where, local_info);
 }
 
 /* Inserts code right before the last bb copy which is used to handle the default
  * case. */
 static void
 drbbdup_insert_dispatch_end(void *drcontext, app_pc translation_pc, void *tag,
-                            instrlist_t *bb, instr_t *where, drbbdup_manager_t *manager)
+                            instrlist_t *bb, instr_t *where,
+                            drbbdup_local_info_t *local_info)
 {
-    /* Check whether dynamic case handling is enabled by the user to handle an unkown
+    drbbdup_manager_t *manager = &local_info->manager;
+
+    /* Check whether dynamic case handling is enabled by the user to handle an unknown
      * case encoding.
      */
     if (manager->enable_dynamic_handling) {
         drbbdup_insert_dynamic_handling(drcontext, translation_pc, tag, bb, where,
-                                        manager);
+                                        local_info);
     }
 
     /* Last bb version is always the default case. */
-    drbbdup_insert_landing_restoration(drcontext, bb, where, manager);
+    drbbdup_insert_landing_restoration(drcontext, bb, where, local_info);
 }
 
 static void
@@ -838,7 +880,7 @@ drbbdup_stitch_bb_copy(void *drcontext, void *tag, instrlist_t *bb, instrlist_t 
     if (local_info->case_index < opts.non_default_case_limit) {
         drbbdup_case_t *case_info = &local_info->manager.cases[local_info->case_index];
         drbbdup_insert_dispatch(drcontext, bb, instr_get_next(local_info->pre),
-                                &local_info->manager, next_bb_label, case_info);
+                                local_info, next_bb_label, case_info);
     } else {
         /* Finished all non-default cases. Now the default case is considered. */
         ASSERT(local_info->case_index == opts.non_default_case_limit,
@@ -847,8 +889,7 @@ drbbdup_stitch_bb_copy(void *drcontext, void *tag, instrlist_t *bb, instrlist_t 
 
         app_pc pc = instr_get_app_pc(drbbdup_first_app(bb));
         drbbdup_insert_dispatch_end(drcontext, pc, tag, bb,
-                                    instr_get_next(local_info->pre),
-                                    &local_info->manager);
+                                    instr_get_next(local_info->pre), local_info);
     }
 
     /* STEP 3: Prepare for next iter. */
@@ -1076,7 +1117,8 @@ drbbdup_handle_new_case()
 }
 
 static app_pc
-init_fp_cache(void (*clean_call_func)())
+create_fp_cache(void (*clean_call_func)(), bool is_flags_reg_live,
+                bool is_scratch_reg_live)
 {
     app_pc cache_pc;
     instrlist_t *ilist;
@@ -1084,7 +1126,22 @@ init_fp_cache(void (*clean_call_func)())
     size_t size = dr_page_size();
     ilist = instrlist_create(drcontext);
 
-    dr_insert_clean_call(drcontext, ilist, NULL, (void *)clean_call_func, false, 0);
+    instr_t *where = INSTR_CREATE_label(drcontext);
+    instrlist_meta_append(ilist, where);
+
+    /* Restore flags and scratch reg to their original app values. */
+    if (is_flags_reg_live) {
+        drbbdup_restore_register(drcontext, ilist, where, DRBBDUP_FLAG_REG_SLOT,
+                                 DRBBDUP_SCRATCH_REG);
+        dr_restore_arith_flags_from_xax(drcontext, ilist, where);
+    }
+
+    if (is_scratch_reg_live) {
+        drbbdup_restore_register(drcontext, ilist, where, DRBBDUP_XAX_REG_SLOT,
+                                 DRBBDUP_SCRATCH_REG);
+    }
+
+    dr_insert_clean_call(drcontext, ilist, where, (void *)clean_call_func, false, 0);
 
     /* Allocate code cache, and set Read-Write-Execute permissions using
      * dr_nonheap_alloc function.
@@ -1107,6 +1164,36 @@ destroy_fp_cache(app_pc cache_pc)
 {
     ASSERT(cache_pc, "Code cache should not be NULL");
     dr_nonheap_free(cache_pc, dr_page_size());
+}
+
+static bool
+init_fp_caches()
+{
+
+    bool succ = true;
+    code_cache_all_live_pc = create_fp_cache(drbbdup_handle_new_case, true, true);
+    succ &= code_cache_all_live_pc != NULL;
+
+    code_cache_scratch_live_pc = create_fp_cache(drbbdup_handle_new_case, false, true);
+    succ &= code_cache_scratch_live_pc != NULL;
+
+    code_cache_flag_live_pc = create_fp_cache(drbbdup_handle_new_case, true, false);
+    succ &= code_cache_flag_live_pc != NULL;
+
+    code_cache_none_live_pc = create_fp_cache(drbbdup_handle_new_case, false, false);
+    succ &= code_cache_none_live_pc != NULL;
+
+    return succ;
+}
+
+static void
+exit_fp_caches()
+{
+
+    destroy_fp_cache(code_cache_all_live_pc);
+    destroy_fp_cache(code_cache_scratch_live_pc);
+    destroy_fp_cache(code_cache_flag_live_pc);
+    destroy_fp_cache(code_cache_none_live_pc);
 }
 
 /****************************************************************************
@@ -1234,20 +1321,23 @@ drbbdup_init(drbbdup_options_t *ops_in)
 
     memcpy(&opts, ops_in, sizeof(drbbdup_options_t));
 
+    drreg_options_t drreg_ops = { sizeof(drreg_ops), 0 /* no regs needed */, false, NULL,
+                                  true };
+
     if (!drmgr_register_bbdup_event(drbbdup_duplicate,
                                     drbbdup_encode_runtime_case_and_clear,
                                     drbbdup_extract_bb_copy, drbbdup_stitch_bb_copy) ||
         !drmgr_register_thread_init_event(drbbdup_thread_init) ||
         !drmgr_register_thread_exit_event(drbbdup_thread_exit) ||
-        !dr_raw_tls_calloc(&tls_raw_reg, &tls_raw_base, DRBBDUP_SLOT_COUNT, 0))
+        !dr_raw_tls_calloc(&tls_raw_reg, &tls_raw_base, DRBBDUP_SLOT_COUNT, 0) ||
+        drreg_init(&drreg_ops) != DRREG_SUCCESS)
         return DRBBDUP_ERROR;
 
     tls_idx = drmgr_register_tls_field();
     if (tls_idx == -1)
         return DRBBDUP_ERROR;
 
-    new_case_cache_pc = init_fp_cache(drbbdup_handle_new_case);
-    if (new_case_cache_pc == NULL)
+    if (!init_fp_caches())
         return DRBBDUP_ERROR;
 
     /* Initialise hash table that keeps track of defined cases per
@@ -1279,13 +1369,14 @@ drbbdup_exit(void)
     ref_count--;
 
     if (ref_count == 0) {
-        destroy_fp_cache(new_case_cache_pc);
+        /* Destroy fast path caches. */
+        exit_fp_caches();
 
         if (!drmgr_unregister_bbdup_event() ||
             !drmgr_unregister_thread_init_event(drbbdup_thread_init) ||
             !drmgr_unregister_thread_exit_event(drbbdup_thread_exit) ||
             !dr_raw_tls_cfree(tls_raw_base, DRBBDUP_SLOT_COUNT) ||
-            !drmgr_unregister_tls_field(tls_idx))
+            !drmgr_unregister_tls_field(tls_idx) || drreg_exit() != DRREG_SUCCESS)
             return DRBBDUP_ERROR;
 
         hashtable_delete(&manager_table);
