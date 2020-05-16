@@ -1807,6 +1807,32 @@ const char *
 dr_get_application_name(void);
 
 DR_API
+/**
+ * Provides information about the app's arguments by setting \p args_buf up to
+ * the size \p buf_size. Returns the number of args set or -1 on error.
+ *
+ * Use dr_app_arg_as_utf8() to get the argument as a string.
+ *
+ * \note Currently, this function is only available on Unix with
+ * early injection.
+ */
+int
+dr_get_app_args(OUT dr_app_arg_t *args_buf, int buf_size);
+
+DR_API
+/* Returns the passed argument as a string. \p buf is used only if needed, and
+ * therefore the caller should not assume that the string is in the \p buf. In other
+ * words, always use the returned value to refer to the string. Returns NULL on error
+ * such as when \p buf is needed as storage and the size of the buffer \p buf_size
+ * is not sufficient.
+ *
+ * \note Currently, this function is only available on Unix with
+ * early injection.
+ */
+const char *
+dr_app_arg_as_utf8(IN dr_app_arg_t *args_buf, char *buf, int buf_size);
+
+DR_API
 /** Returns the process id of the current process. */
 process_id_t
 dr_get_process_id(void);

@@ -314,6 +314,9 @@ char *
 get_application_pid(void);
 char *
 get_application_name(void);
+
+int
+get_app_args(OUT dr_app_arg_t *args_buf, int buf_size);
 const char *
 get_application_short_name(void);
 char *
