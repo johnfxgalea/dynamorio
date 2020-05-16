@@ -7187,18 +7187,20 @@ dr_unlink_flush_region(app_pc start, size_t size)
                   "dr_unlink_flush_region is not supported with -opt_memory unless "
                   "-thread_private or -enable_full_api is also specified");
 
-    /* Flush requires !couldbelinking. FIXME - not all event callbacks to the client are
-     * !couldbelinking (see PR 227619) restricting where this routine can be used. */
+    /* Flush requires !couldbelinking. XXX - not all event callbacks to the client are
+     * !couldbelinking (see PR 227619) restricting where this routine can be used.
+     */
     CLIENT_ASSERT(!is_couldbelinking(dcontext),
                   "dr_flush_region: called from an event "
                   "callback that doesn't support calling this routine, see header file "
                   "for restrictions.");
     /* Flush requires caller to hold no locks that might block a couldbelinking thread
-     * (which includes almost all dr locks).  FIXME - some event callbacks are holding
-     * dr locks (see PR 227619) so can't call this routine.  FIXME - some event callbacks
+     * (which includes almost all dr locks).  XXX - some event callbacks are holding
+     * dr locks (see PR 227619) so can't call this routine.  XXX - some event callbacks
      * are couldbelinking (see PR 227619) so can't allow the caller to hold any client
      * locks that could block threads in one of those events (otherwise we don't need
-     * to care about client locks) */
+     * to care about client locks).
+     */
     CLIENT_ASSERT(OWN_NO_LOCKS(dcontext),
                   "dr_flush_region: caller owns a client "
                   "lock or was called from an event callback that doesn't support "
@@ -7215,6 +7217,39 @@ dr_unlink_flush_region(app_pc start, size_t size)
     flush_fragments_from_region(dcontext, start, size, false /*don't force synchall*/);
 
     return true;
+}
+
+DR_API
+bool
+dr_unlink_flush_fragment(app_pc tag)
+{
+    dcontext_t *dcontext = get_thread_private_dcontext();
+    CLIENT_ASSERT(!standalone_library, "API not supported in standalone mode");
+    ASSERT(dcontext != NULL);
+
+    LOG(THREAD, LOG_FRAGMENT, 2, "%s: " PFX "\n", __FUNCTION__, tag);
+
+    /* This routine won't work with coarse_units. */
+    CLIENT_ASSERT(!DYNAMO_OPTION(coarse_units),
+                  /* As of now, coarse_units are always disabled with -thread_private. */
+                  "dr_unlink_flush_fragment is not supported with -opt_memory unless "
+                  "-thread_private or -enable_full_api is also specified");
+
+    /* See dr_unlink_flush_region() for comments explaining these asserts. */
+    CLIENT_ASSERT(!is_couldbelinking(dcontext),
+                  "dr_unlink_flush_fragment: called from an event "
+                  "callback that doesn't support calling this routine, see header file "
+                  "for restrictions.");
+    CLIENT_ASSERT(OWN_NO_LOCKS(dcontext),
+                  "dr_unlink_flush_fragment: caller owns a client "
+                  "lock or was called from an event callback that doesn't support "
+                  "calling this routine, see header file for restrictions.");
+
+    /* release build check of requirements, as many as possible at least */
+    if (is_couldbelinking(dcontext))
+        return false;
+
+    return fcache_flush_fragment(dcontext, tag);
 }
 
 DR_API

@@ -150,6 +150,7 @@ Further non-compatibility-affecting changes include:
    opcode event instrumentation.
  - Added dr_get_app_args() and dr_app_arg_as_utf8()  to enable the gathering
    of application command-line args on Unix systems.
+ - Added dr_unlink_flush_fragment() enabling the deletion of a specific shared fragment.
 
 **************************************************
 <hr>
