@@ -3229,7 +3229,7 @@ drmgr_register_bbdup_event(drmgr_bbdup_duplicate_bb_cb_t bb_dup_func,
 
     /* None of the cbs can be NULL. */
     if (bb_dup_func == NULL || insert_encoding == NULL || extract_func == NULL ||
-        stitch_func)
+        stitch_func == NULL)
         return succ;
 
     dr_rwlock_write_lock(bb_cb_lock);
