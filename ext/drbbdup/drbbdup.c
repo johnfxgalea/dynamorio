@@ -247,9 +247,6 @@ drbbdup_create_manager(void *drcontext, void *tag, instrlist_t *bb)
             !drbbdup_encoding_already_included(manager, manager->default_case.encoding,
                                                false /* don't check default case */),
             "default case encoding cannot be already registered");
-        /* XXX i#3778: To remove once we support specific fragment deletion. */
-        DR_ASSERT_MSG(!manager->enable_dynamic_handling,
-                      "dynamic case generation is not yet supported");
     } else {
         /* Just delete as dups are not wanted. */
         drbbdup_destroy_manager(manager);
