@@ -234,6 +234,7 @@ drbbdup_create_manager(void *drcontext, void *tag, instrlist_t *bb)
     manager->default_case.encoding =
         opts.set_up_bb_dups(manager, drcontext, tag, bb, &enable_dup,
                             &manager->enable_dynamic_handling, opts.user_data);
+    manager->default_case.is_defined = true;
 
     /* Set default case regardless whether dups are enabled. */
     drbbdup_per_thread *pt =
@@ -241,7 +242,6 @@ drbbdup_create_manager(void *drcontext, void *tag, instrlist_t *bb)
     pt->cur_case = manager->default_case;
 
     if (enable_dup) {
-        manager->default_case.is_defined = true;
         /* Default case encoding should not be already registered. */
         DR_ASSERT_MSG(
             !drbbdup_encoding_already_included(manager, manager->default_case.encoding,
