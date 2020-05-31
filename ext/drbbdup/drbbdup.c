@@ -88,6 +88,7 @@ typedef struct {
 
 /* Contains per bb information required for managing bb copies. */
 typedef struct {
+    bool enable_dup;              /* Denotes whether to duplicate blocks. */
     bool enable_dynamic_handling; /* Denotes whether to dynamically generate cases. */
     bool is_gen; /* Denotes whether a new bb copy is dynamically being generated. */
     drbbdup_case_t default_case;
@@ -209,8 +210,11 @@ drbbdup_destroy_manager(void *manager_opaque)
 {
     drbbdup_manager_t *manager = (drbbdup_manager_t *)manager_opaque;
     ASSERT(manager != NULL, "manager should not be NULL");
-    ASSERT(opts.non_default_case_limit > 0, "dup limit should be greater than zero");
-    dr_global_free(manager->cases, sizeof(drbbdup_case_t) * opts.non_default_case_limit);
+    if (manager->enable_dup && manager->cases != NULL) {
+        ASSERT(opts.non_default_case_limit > 0, "dup limit should be greater than zero");
+        dr_global_free(manager->cases,
+                       sizeof(drbbdup_case_t) * opts.non_default_case_limit);
+    }
     dr_global_free(manager, sizeof(drbbdup_manager_t));
 }
 
@@ -220,37 +224,34 @@ drbbdup_destroy_manager(void *manager_opaque)
 static drbbdup_manager_t *
 drbbdup_create_manager(void *drcontext, void *tag, instrlist_t *bb)
 {
-    bool enable_dup = false;
     drbbdup_manager_t *manager = dr_global_alloc(sizeof(drbbdup_manager_t));
     memset(manager, 0, sizeof(drbbdup_manager_t));
     ASSERT(opts.non_default_case_limit > 0, "dup limit should be greater than zero");
     manager->cases =
         dr_global_alloc(sizeof(drbbdup_case_t) * opts.non_default_case_limit);
     memset(manager->cases, 0, sizeof(drbbdup_case_t) * opts.non_default_case_limit);
+    manager->enable_dup = true;
     manager->enable_dynamic_handling = true;
     manager->is_gen = false;
 
     ASSERT(opts.set_up_bb_dups != NULL, "set up call-back cannot be NULL");
     manager->default_case.encoding =
-        opts.set_up_bb_dups(manager, drcontext, tag, bb, &enable_dup,
+        opts.set_up_bb_dups(manager, drcontext, tag, bb, &manager->enable_dup,
                             &manager->enable_dynamic_handling, opts.user_data);
     manager->default_case.is_defined = true;
 
-    /* Set default case regardless whether dups are enabled. */
-    drbbdup_per_thread *pt =
-        (drbbdup_per_thread *)drmgr_get_tls_field(drcontext, tls_idx);
-    pt->cur_case = manager->default_case;
+    /* Default case encoding should not be already registered. */
+    DR_ASSERT_MSG(
+        !drbbdup_encoding_already_included(manager, manager->default_case.encoding,
+                                           false /* don't check default case */),
+        "default case encoding cannot be already registered");
 
-    if (enable_dup) {
-        /* Default case encoding should not be already registered. */
-        DR_ASSERT_MSG(
-            !drbbdup_encoding_already_included(manager, manager->default_case.encoding,
-                                               false /* don't check default case */),
-            "default case encoding cannot be already registered");
-    } else {
-        /* Just delete as dups are not wanted. */
-        drbbdup_destroy_manager(manager);
-        manager = NULL;
+    /* Check whether user wants copies for this particular bb. */
+    if (!manager->enable_dup) {
+        /* Multiple cases not wanted. Destroy cases. */
+        dr_global_free(manager->cases,
+                       sizeof(drbbdup_case_t) * opts.non_default_case_limit);
+        manager->cases = NULL;
     }
 
     return manager;
@@ -261,7 +262,7 @@ drbbdup_create_local_info(void *drcontext, instrlist_t *bb,
                           drbbdup_manager_t *manager_to_copy)
 {
     bool is_dead;
-
+    ASSERT(manager_to_copy->enable_dup, "Should only create local info for duplication.");
     drbbdup_local_info_t *local_info =
         dr_thread_alloc(drcontext, sizeof(drbbdup_local_info_t));
     memset(local_info, 0, sizeof(drbbdup_local_info_t));
@@ -325,6 +326,7 @@ static void
 drbbdup_set_up_copies(void *drcontext, instrlist_t *bb, drbbdup_manager_t *manager)
 {
     ASSERT(manager != NULL, "manager should not be NULL");
+    ASSERT(manager->enable_dup, "bb duplication should be enabled");
     ASSERT(manager->cases != NULL, "cases should not be NULL");
 
     /* Example: Lets say we have the following bb:
@@ -419,6 +421,9 @@ drbbdup_duplicate(void *drcontext, void *tag, instrlist_t *bb, bool for_trace,
     app_pc pc = instr_get_app_pc(instrlist_first_app(bb));
     ASSERT(pc != NULL, "pc cannot be NULL");
 
+    drbbdup_per_thread *pt =
+            (drbbdup_per_thread *)drmgr_get_tls_field(drcontext, tls_idx);
+
     dr_rwlock_write_lock(rw_lock);
     drbbdup_manager_t *manager =
         (drbbdup_manager_t *)hashtable_lookup(&manager_table, pc);
@@ -434,22 +439,25 @@ drbbdup_duplicate(void *drcontext, void *tag, instrlist_t *bb, bool for_trace,
      */
     if (manager == NULL) {
         manager = drbbdup_create_manager(drcontext, tag, bb);
-        if (manager != NULL)
-            hashtable_add(&manager_table, pc, manager);
-
+        ASSERT(manager != NULL, "created manager cannot be NULL");
+        hashtable_add(&manager_table, pc, manager);
         if (opts.is_stat_enabled) {
             dr_mutex_lock(stat_mutex);
-            if (manager == NULL)
+            if (!manager->enable_dup)
                 stats.no_dup_count++;
-            else if (!manager->enable_dynamic_handling)
+            if (!manager->enable_dynamic_handling)
                 stats.no_dynamic_handling_count++;
             dr_mutex_unlock(stat_mutex);
         }
     }
 
-    if (manager != NULL) {
-        /* Create a local context to avoid further locking. */
+    /* Create a local context to avoid further locking. Needed only if dups are enabled.
+     */
+    if (manager->enable_dup) {
         local_info = drbbdup_create_local_info(drcontext, bb, manager);
+    }else{
+        /* Dups are not enabled. Need to set the current case to default. */
+    	pt->cur_case = manager->default_case;
     }
 
     dr_rwlock_write_unlock(rw_lock);
@@ -545,7 +553,6 @@ drbbdup_next_end(instr_t *instr)
 static bool
 drbbdup_set_pending_case(void *drcontext, drbbdup_local_info_t *local_info)
 {
-
     drbbdup_case_t *case_info = NULL;
     bool found = false;
     if (!found && local_info->case_index < opts.non_default_case_limit) {
@@ -704,7 +711,6 @@ drbbdup_get_hitcount_hash(intptr_t bb_id)
 static app_pc
 get_fp_cache(bool is_flags_reg_live, bool is_scratch_reg_live)
 {
-
     if (is_flags_reg_live && is_scratch_reg_live)
         return code_cache_all_live_pc;
     else if (is_flags_reg_live && !is_scratch_reg_live)
@@ -964,11 +970,14 @@ drbbdup_encoding_already_included(drbbdup_manager_t *manager, uintptr_t encoding
 {
     ASSERT(manager != NULL, "manager cannot be NULL");
     drbbdup_case_t *drbbdup_case;
-    int i;
-    for (i = 0; i < opts.non_default_case_limit; i++) {
-        drbbdup_case = &manager->cases[i];
-        if (drbbdup_case->is_defined && drbbdup_case->encoding == encoding_check)
-            return true;
+    if (manager->enable_dup) {
+
+        int i;
+        for (i = 0; i < opts.non_default_case_limit; i++) {
+            drbbdup_case = &manager->cases[i];
+            if (drbbdup_case->is_defined && drbbdup_case->encoding == encoding_check)
+                return true;
+        }
     }
 
     /* Check default case. */
@@ -987,14 +996,16 @@ drbbdup_encoding_already_included(drbbdup_manager_t *manager, uintptr_t encoding
 static bool
 drbbdup_include_encoding(drbbdup_manager_t *manager, uintptr_t new_encoding)
 {
-    int i;
-    drbbdup_case_t *dup_case;
-    for (i = 0; i < opts.non_default_case_limit; i++) {
-        dup_case = &manager->cases[i];
-        if (!dup_case->is_defined) {
-            dup_case->is_defined = true;
-            dup_case->encoding = new_encoding;
-            return true;
+    if (manager->enable_dup) {
+        int i;
+        drbbdup_case_t *dup_case;
+        for (i = 0; i < opts.non_default_case_limit; i++) {
+            dup_case = &manager->cases[i];
+            if (!dup_case->is_defined) {
+                dup_case->is_defined = true;
+                dup_case->encoding = new_encoding;
+                return true;
+            }
         }
     }
     return false;
@@ -1045,6 +1056,7 @@ drbbdup_handle_new_case()
     drbbdup_manager_t *manager =
         (drbbdup_manager_t *)hashtable_lookup(&manager_table, pc);
     ASSERT(manager != NULL, "manager cannot be NULL");
+    ASSERT(manager->enable_dup, "duplication should be enabled");
     ASSERT(new_encoding != manager->default_case.encoding,
            "unhandled encoding cannot be the default case");
 
