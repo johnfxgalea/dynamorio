@@ -251,6 +251,16 @@ drbbdup_register_case_encoding(void *drbbdup_ctx, uintptr_t encoding);
 
 DR_EXPORT
 /**
+ * Returns via \p is_dup whether the current basic block under instrumentation
+ * is duplicated. Can only be called during an instrumentation phase of drmgr.
+ *
+ * @return whether successful or an error code on failure.
+ */
+drbbdup_status_t
+drbbdup_is_bb_duplicated(void *drcontext, OUT bool *is_dup);
+
+DR_EXPORT
+/**
  * Returns via \p cur_case the current case encoding that is
  * being considered by the calling thread during instrumentation.
  * Can only be called during an instrumentation phase of drmgr.
