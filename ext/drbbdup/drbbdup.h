@@ -283,6 +283,24 @@ DR_EXPORT
 drbbdup_status_t
 drbbdup_get_stats(OUT drbbdup_stats_t *stats);
 
+DR_EXPORT
+/**
+ * Registers a callback function that is triggered before basic block duplication. Enables the
+ * user to modify and analyse the basic block before the generation of copies.
+ *
+ * @return whether successful or an error code on failure.
+ */
+drbbdup_status_t
+drbbdup_register_pre_dup_event(drmgr_xform_cb_t func, drmgr_priority_t *priority);
+
+DR_EXPORT
+/**
+ * Unregisters a callback function that is triggered before basic block duplication.
+ * @return whether successful or an error code on failure.
+ */
+drbbdup_status_t
+drbbdup_unregister_pre_dup_event(drmgr_xform_cb_t func);
+
 /*@}*/ /* end doxygen group */
 
 #ifdef __cplusplus

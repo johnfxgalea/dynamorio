@@ -1285,6 +1285,39 @@ drbbdup_get_stats(OUT drbbdup_stats_t *stats_in)
 }
 
 /****************************************************************************
+ * PRE DUP REGISTRATION
+ */
+
+drbbdup_status_t
+drbbdup_register_pre_dup_event(drmgr_xform_cb_t func, drmgr_priority_t *priority)
+{
+    if (ref_count == 0)
+        return DRBBDUP_ERROR_NOT_INITIALIZED;
+
+    if (!drmgr_register_bbdup_pre_event(func, priority))
+        return DRBBDUP_ERROR;
+
+    return DRBBDUP_SUCCESS;
+}
+
+DR_EXPORT
+/**
+ * Unregisters a callback function that is triggered before basic block duplication.
+ * @return whether successful or an error code on failure.
+ */
+drbbdup_status_t
+drbbdup_unregister_pre_dup_event(drmgr_xform_cb_t func)
+{
+    if (ref_count == 0)
+        return DRBBDUP_ERROR_NOT_INITIALIZED;
+
+    if (!drmgr_unregister_bbdup_pre_event(func))
+        return DRBBDUP_ERROR;
+
+    return DRBBDUP_SUCCESS;
+}
+
+/****************************************************************************
  * THREAD INIT AND EXIT
  */
 
