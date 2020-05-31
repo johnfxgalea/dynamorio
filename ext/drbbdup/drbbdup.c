@@ -102,6 +102,8 @@ typedef enum {
 } drbbdup_label_t;
 
 typedef struct {
+    /* Denotes whether or not current bb being instrumented is duplicated. */
+    bool is_dup;
     /* Used to keep track of the current case during drmgr's instrumentation. */
     drbbdup_case_t cur_case;
     uint16_t hit_counts[TABLE_SIZE]; /* Keeps track of hit-counts of unhandled cases. */
@@ -422,7 +424,7 @@ drbbdup_duplicate(void *drcontext, void *tag, instrlist_t *bb, bool for_trace,
     ASSERT(pc != NULL, "pc cannot be NULL");
 
     drbbdup_per_thread *pt =
-            (drbbdup_per_thread *)drmgr_get_tls_field(drcontext, tls_idx);
+        (drbbdup_per_thread *)drmgr_get_tls_field(drcontext, tls_idx);
 
     dr_rwlock_write_lock(rw_lock);
     drbbdup_manager_t *manager =
@@ -455,9 +457,9 @@ drbbdup_duplicate(void *drcontext, void *tag, instrlist_t *bb, bool for_trace,
      */
     if (manager->enable_dup) {
         local_info = drbbdup_create_local_info(drcontext, bb, manager);
-    }else{
+    } else {
         /* Dups are not enabled. Need to set the current case to default. */
-    	pt->cur_case = manager->default_case;
+        pt->cur_case = manager->default_case;
     }
 
     dr_rwlock_write_unlock(rw_lock);
@@ -466,11 +468,13 @@ drbbdup_duplicate(void *drcontext, void *tag, instrlist_t *bb, bool for_trace,
     *local_info_opaque = (void *)local_info;
     /* Add the copies. */
     if (local_info != NULL) {
+        pt->is_dup = true;
         drbbdup_set_up_copies(drcontext, bb, &local_info->manager);
         local_info->bb_start = instrlist_first(bb);
         return true;
     }
 
+    pt->is_dup = false;
     return false;
 }
 
@@ -583,6 +587,7 @@ drbbdup_set_pending_case(void *drcontext, drbbdup_local_info_t *local_info)
     /* Set the current case. */
     drbbdup_per_thread *pt =
         (drbbdup_per_thread *)drmgr_get_tls_field(drcontext, tls_idx);
+    ASSERT(pt->is_dup, "bb should be marked as duplicated.");
     pt->cur_case = *case_info;
 
     return true;
@@ -957,6 +962,7 @@ drbbdup_encode_runtime_case_and_clear(void *drcontext, void *tag, instrlist_t *b
 
     drbbdup_per_thread *pt =
         (drbbdup_per_thread *)drmgr_get_tls_field(drcontext, tls_idx);
+    pt->is_dup = false;
     pt->cur_case.is_defined = false;
 }
 
@@ -1228,6 +1234,23 @@ drbbdup_register_case_encoding(void *drbbdup_ctx, uintptr_t encoding)
 }
 
 drbbdup_status_t
+drbbdup_is_bb_duplicated(void *drcontext, OUT bool *is_dup)
+{
+    if (is_dup == NULL)
+        return DRBBDUP_ERROR_INVALID_PARAMETER;
+
+    if (drmgr_current_bb_phase(drcontext) == DRMGR_PHASE_NONE)
+        return DRBBDUP_ERROR_NO_INSTRUM;
+
+    drbbdup_per_thread *pt =
+        (drbbdup_per_thread *)drmgr_get_tls_field(drcontext, tls_idx);
+
+    *is_dup = pt->is_dup;
+
+    return DRBBDUP_SUCCESS;
+}
+
+drbbdup_status_t
 drbbdup_get_current_case_encoding(void *drcontext, OUT uintptr_t *cur_case)
 {
     if (cur_case == NULL)
@@ -1271,6 +1294,7 @@ drbbdup_thread_init(void *drcontext)
 {
     drbbdup_per_thread *pt =
         (drbbdup_per_thread *)dr_thread_alloc(drcontext, sizeof(drbbdup_per_thread));
+    pt->is_dup = false;
     pt->cur_case.is_defined = false;
     /* Init hit table. */
     for (int i = 0; i < TABLE_SIZE; i++)
