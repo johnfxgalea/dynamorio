@@ -4044,6 +4044,7 @@ record_pending_signal(dcontext_t *dcontext, int sig, kernel_ucontext_t *ucxt,
     os_thread_data_t *ostd = (os_thread_data_t *)dcontext->os_field;
     sigcontext_t *sc = SIGCXT_FROM_UCXT(ucxt);
     /* XXX #1615: we need a full ucontext to store pre-xl8 simd values */
+    kernel_fpstate_t fpstate_orig;
     sigcontext_t sc_orig;
     byte *pc = (byte *)sc->SC_XIP;
     byte *xsp = (byte *)sc->SC_XSP;
@@ -4319,7 +4320,9 @@ record_pending_signal(dcontext_t *dcontext, int sig, kernel_ucontext_t *ucxt,
 
         ASSERT(!at_auto_restart_syscall); /* only used for delayed delivery */
 
+        fpstate_orig = *sc->fpstate;
         sc_orig = *sc;
+        sc_orig.fpstate = &fpstate_orig;
         ASSERT(!forged);
         /* cache the fragment since pclookup is expensive for coarse (i#658) */
         f = fragment_pclookup(dcontext, (cache_pc)sc->SC_XIP, &wrapper);
@@ -4372,7 +4375,10 @@ record_pending_signal(dcontext_t *dcontext, int sig, kernel_ucontext_t *ucxt,
             dr_signal_action_t action;
             /* cache the fragment since pclookup is expensive for coarse (i#658) */
             f = fragment_pclookup(dcontext, (cache_pc)sc->SC_XIP, &wrapper);
+
+            fpstate_orig = *sc->fpstate;
             sc_orig = *sc;
+            sc_orig.fpstate = &fpstate_orig;
             translate_sigcontext(dcontext, ucxt, true /*shouldn't fail*/, f);
             /* make a copy before send_signal_to_client() tweaks it */
             sigcontext_t sc_interrupted = *sc;
@@ -4398,7 +4404,10 @@ record_pending_signal(dcontext_t *dcontext, int sig, kernel_ucontext_t *ucxt,
                    default_action[sig] == DEFAULT_TERMINATE_CORE);
             LOG(THREAD, LOG_ASYNCH, 1,
                 "blocked fatal signal %d cannot be delayed: terminating\n", sig);
+
+            fpstate_orig = *sc->fpstate;
             sc_orig = *sc;
+            sc_orig.fpstate = &fpstate_orig;
             /* If forged we're likely couldbelinking, and we don't need to xl8. */
             if (forged)
                 ASSERT(is_couldbelinking(dcontext));
