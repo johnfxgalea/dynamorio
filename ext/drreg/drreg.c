@@ -153,7 +153,7 @@ drreg_restore_reg_now(void *drcontext, instrlist_t *ilist, instr_t *inst,
 
 static drreg_status_t
 drreg_restore_xmm_reg_now(void *drcontext, instrlist_t *ilist, instr_t *inst,
-                          per_thread_t *pt, reg_id_t reg);
+                          per_thread_t *pt, reg_id_t reg, reg_id_t *in_xmm_block_reg);
 
 static void
 drreg_move_aflags_from_reg(void *drcontext, instrlist_t *ilist, instr_t *where,
@@ -565,6 +565,8 @@ drreg_restore_all_helper(void *drcontext, instrlist_t *bb, instr_t *inst,
             DR_ASSERT(pt->aflags.native);
     }
 
+
+    xmm_block_reg = DR_REG_NULL;
     for (reg = DR_REG_START_XMM; reg <= DR_REG_APPLICABLE_STOP_XMM; reg++) {
         restored_for_xmm_read[XMM_IDX(reg)] = false;
         if (!pt->xmm_reg[XMM_IDX(reg)].native) {
@@ -587,7 +589,7 @@ drreg_restore_all_helper(void *drcontext, instrlist_t *bb, instr_t *inst,
 
                 if (!pt->xmm_reg[XMM_IDX(reg)].in_use) {
 
-                    res = drreg_restore_xmm_reg_now(drcontext, bb, inst, pt, reg);
+                    res = drreg_restore_xmm_reg_now(drcontext, bb, inst, pt, reg, &xmm_block_reg);
                     if (res != DRREG_SUCCESS)
                         drreg_report_error(res, "lazy restore failed");
                     ASSERT(pt->xmm_pending_unreserved > 0, "should not go negative");
@@ -624,8 +626,6 @@ drreg_restore_all_helper(void *drcontext, instrlist_t *bb, instr_t *inst,
                                     true);
                     /* Share the tool val spill if this inst writes too */
                     restored_for_xmm_read[XMM_IDX(reg)] = true;
-                    /* We keep .native==false */
-                    drreg_unreserve_register(drcontext, bb, next, xmm_block_reg);
                 }
 
                 if (restore_now)
@@ -633,6 +633,10 @@ drreg_restore_all_helper(void *drcontext, instrlist_t *bb, instr_t *inst,
             }
         }
     }
+
+    if (xmm_block_reg != DR_REG_NULL)
+        drreg_unreserve_register(drcontext, bb, next, xmm_block_reg);
+
 
     /* Before each app read, or at end of bb, restore spilled registers to app values: */
     for (reg = DR_REG_START_GPR; reg <= DR_REG_STOP_GPR; reg++) {
@@ -804,7 +808,7 @@ drreg_restore_all_helper(void *drcontext, instrlist_t *bb, instr_t *inst,
 
             if (pt->xmm_reg[XMM_IDX(reg)].ever_spilled)
                 pt->xmm_reg[XMM_IDX(reg)].ever_spilled = false; /* no need to restore */
-            res = drreg_restore_xmm_reg_now(drcontext, bb, inst, pt, reg);
+            res = drreg_restore_xmm_reg_now(drcontext, bb, inst, pt, reg, NULL /* not needed */);
             if (res != DRREG_SUCCESS)
                 drreg_report_error(res, "slot release on app write failed");
             pt->xmm_pending_unreserved--;
@@ -1638,7 +1642,7 @@ drreg_restore_reg_now(void *drcontext, instrlist_t *ilist, instr_t *inst,
 
 static drreg_status_t
 drreg_restore_xmm_reg_now(void *drcontext, instrlist_t *ilist, instr_t *inst,
-                          per_thread_t *pt, reg_id_t reg)
+                          per_thread_t *pt, reg_id_t reg, reg_id_t *in_xmm_block_reg)
 {
     drreg_status_t res;
 
@@ -1649,19 +1653,26 @@ drreg_restore_xmm_reg_now(void *drcontext, instrlist_t *ilist, instr_t *inst,
         }
 
         reg_id_t xmm_block_reg;
-        /* We pick an unreserved reg, spill it, and use it for scratch */
-        res = drreg_reserve_reg_internal(drcontext, ilist, inst, NULL, false,
-                                         &xmm_block_reg);
-        if (res != DRREG_SUCCESS)
-            return res;
+        if (in_xmm_block_reg == NULL || *in_xmm_block_reg == DR_REG_NULL) {
+            /* We pick an unreserved reg, spill it, and use it for scratch */
+            res = drreg_reserve_reg_internal(drcontext, ilist, inst, NULL, false,
+                                             &xmm_block_reg);
+            if (res != DRREG_SUCCESS)
+                return res;
 
-        load_xmm_block(drcontext, ilist, inst, xmm_block_reg);
+            load_xmm_block(drcontext, ilist, inst, xmm_block_reg);
+
+            if (*in_xmm_block_reg == DR_REG_NULL)
+                *in_xmm_block_reg = xmm_block_reg;
+        }else{
+        	xmm_block_reg = *in_xmm_block_reg;
+        }
 
         restore_xmm_reg(drcontext, pt, reg, pt->xmm_reg[XMM_IDX(reg)].slot, ilist, inst,
                         xmm_block_reg, true);
 
-        /* We keep .native==false */
-        drreg_unreserve_register(drcontext, ilist, inst, xmm_block_reg);
+        if (in_xmm_block_reg == NULL)
+            drreg_unreserve_register(drcontext, ilist, inst, xmm_block_reg);
 
     } else {
         pt->xmm_slot_use[pt->xmm_reg[XMM_IDX(reg)].slot] = DR_REG_NULL;
@@ -1718,7 +1729,7 @@ drreg_unreserve_xmm_register(void *drcontext, instrlist_t *ilist, instr_t *where
         drreg_status_t res;
         /* XXX i#2585: drreg should predicate spills and restores as appropriate */
         instrlist_set_auto_predicate(ilist, DR_PRED_NONE);
-        res = drreg_restore_xmm_reg_now(drcontext, ilist, where, pt, reg);
+        res = drreg_restore_xmm_reg_now(drcontext, ilist, where, pt, reg, NULL);
         instrlist_set_auto_predicate(ilist, pred);
         if (res != DRREG_SUCCESS)
             return res;
