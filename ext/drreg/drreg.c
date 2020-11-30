@@ -2601,8 +2601,8 @@ tls_data_init(per_thread_t *pt)
     pt->aflags.native = true;
     drvector_init(&pt->aflags.live, 20, false /*!synch*/, NULL);
 
-    pt->xmm_spill_start = dr_global_alloc((REG_XMM_SIZE * MAX_XMM_SPILLS) + 15);
-     pt->xmm_spills = (byte *) ALIGN_FORWARD(pt->xmm_spill_start, 16);
+    pt->xmm_spill_start = dr_global_alloc((REG_XMM_SIZE * MAX_XMM_SPILLS) + 31);
+     pt->xmm_spills = (byte *) ALIGN_FORWARD(pt->xmm_spill_start, 32);
 }
 
 static void
@@ -2617,7 +2617,7 @@ tls_data_free(per_thread_t *pt)
     }
     drvector_delete(&pt->aflags.live);
 
-    dr_global_free(pt->xmm_spill_start, (REG_XMM_SIZE * MAX_XMM_SPILLS) + 15);
+    dr_global_free(pt->xmm_spill_start, (REG_XMM_SIZE * MAX_XMM_SPILLS) + 31);
 }
 
 static void
