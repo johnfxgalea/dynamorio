@@ -71,7 +71,7 @@
 
 /* This should be pretty hard to exceed as there aren't this many XMMs */
 #define MAX_XMM_SPILLS (MCXT_NUM_SIMD_SLOTS + 8)
-#define REG_XMM_SIZE 16
+#define REG_XMM_SIZE 32
 
 #define AFLAGS_SLOT 0 /* always */
 
@@ -280,9 +280,9 @@ spill_xmm_reg(void *drcontext, per_thread_t *pt, reg_id_t reg, uint slot,
     pt->xmm_slot_use[slot] = reg;
 
     opnd_t mem_opnd = opnd_create_base_disp(xmm_block_reg, DR_REG_NULL, 1,
-                                            slot * REG_XMM_SIZE, OPSZ_16);
-    opnd_t spill_reg_opnd = opnd_create_reg(reg);
-    PRE(ilist, where, INSTR_CREATE_movdqa(drcontext, mem_opnd, spill_reg_opnd));
+                                            slot * REG_XMM_SIZE, OPSZ_32);
+    opnd_t spill_reg_opnd = opnd_create_reg(DR_REG_YMM0 + (reg - DR_REG_XMM0));
+    PRE(ilist, where, INSTR_CREATE_vmovdqa(drcontext, mem_opnd, spill_reg_opnd));
 }
 
 /* Up to caller to update pt->reg.  This routine updates pt->slot_use if release==true. */
@@ -317,9 +317,11 @@ restore_xmm_reg(void *drcontext, per_thread_t *pt, reg_id_t reg, uint slot,
         pt->xmm_slot_use[slot] = DR_REG_NULL;
 
     opnd_t mem_opnd = opnd_create_base_disp(xmm_block_reg, DR_REG_NULL, 0,
-                                            slot * REG_XMM_SIZE, OPSZ_16);
-    opnd_t restore_reg_opnd = opnd_create_reg(reg);
-    PRE(ilist, where, INSTR_CREATE_movdqa(drcontext, restore_reg_opnd, mem_opnd));
+                                            slot * REG_XMM_SIZE, OPSZ_32);
+
+    opnd_t restore_reg_opnd = opnd_create_reg(DR_REG_YMM0 + (reg - DR_REG_XMM0));
+
+    PRE(ilist, where, INSTR_CREATE_vmovdqa(drcontext, restore_reg_opnd, mem_opnd));
 }
 
 static reg_t
@@ -2286,7 +2288,7 @@ is_our_spill_or_restore(void *drcontext, instr_t *instr, instr_t *next_instr,
     } else if (tls && offs == tls_main_offs && !(is_spilled)) {
 
         DR_ASSERT(next_instr);
-        DR_ASSERT(instr_get_opcode(next_instr) == OP_movdqa);
+        DR_ASSERT(instr_get_opcode(next_instr) == OP_vmovdqa);
 
         is_xmm = true;
         opnd_t dst = instr_get_dst(next_instr, 0);
